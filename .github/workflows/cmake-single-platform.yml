@@ -1,0 +1,71 @@
+name: Kernel Build
+
+on:
+  push:
+    branches:
+      - android-4.14  # Trigger build on push to the specified branch
+  pull_request:
+    branches:
+      - android-4.14  # Trigger build on pull request targeting the specified branch
+
+jobs:
+  build:
+    runs-on: ubuntu-latest  # Use Ubuntu as the base environment for the build
+
+    steps:
+    - name: Checkout Kernel Repository
+      uses: actions/checkout@v4  # Check out the kernel source code
+
+    - name: Setup Build Environment
+      run: |
+        # Install necessary packages for building the kernel
+        sudo apt-get update
+        sudo apt-get install -y \
+          clang \
+          llvm \
+          lld \
+          make \
+          gcc \
+          libncurses5-dev \
+          libelf-dev \
+          bc \
+          flex \
+          bison \
+          ccache \
+          git \
+          libssl-dev
+
+    - name: Set Environment Variables
+      run: |
+        # Set the environment variables for the kernel build
+        export CC=clang
+        export LD=ld.lld
+        export CLANG_PREBUILT_BIN=prebuilts-master/clang/host/linux-x86/clang-r383902/bin
+        export BUILDTOOLS_PREBUILT_BIN=build/build-tools/path/linux-x86
+        export KERNEL_DIR=common
+        export EXTRA_CMDS=""
+        export STOP_SHIP_TRACEPRINTK=1
+
+    - name: Build the Kernel
+      run: |
+        # Navigate to the kernel directory and start the build process
+        cd $KERNEL_DIR
+
+        # Use the provided configuration or set the default config
+        make O=out ARCH=arm64 sprd_sharkl5Pro_defconfig  # Update the defconfig if necessary for your target architecture
+
+        # Start the kernel build using Clang
+        make O=out ARCH=arm64 CC=$CC LD=$LD CROSS_COMPILE=clang- HOSTCC=clang -j$(nproc)
+
+    - name: Archive Kernel Artifacts
+      run: |
+        # Save the compiled kernel artifacts (e.g., zImage, dtb, or Image)
+        mkdir -p $GITHUB_WORKSPACE/output
+        cp out/arch/arm64/boot/zImage $GITHUB_WORKSPACE/output/
+        cp out/arch/arm64/boot/dtbs/*.dtb $GITHUB_WORKSPACE/output/
+        
+    - name: Upload Kernel Artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: kernel-artifacts
+        path: $GITHUB_WORKSPACE/output
