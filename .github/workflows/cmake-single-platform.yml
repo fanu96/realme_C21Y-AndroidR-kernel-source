@@ -42,7 +42,8 @@ jobs:
         export LD=ld.lld
         export CLANG_PREBUILT_BIN=prebuilts-master/clang/host/linux-x86/clang-r383902/bin
         export BUILDTOOLS_PREBUILT_BIN=build/build-tools/path/linux-x86
-        export KERNEL_DIR=common
+        export KERNEL_DIR=$(pwd)/kernel
+        echo "KERNEL_DIR=$KERNEL_DIR"
         export EXTRA_CMDS=""
         export STOP_SHIP_TRACEPRINTK=1
 
