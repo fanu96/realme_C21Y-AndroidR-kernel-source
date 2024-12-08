@@ -49,9 +49,8 @@ jobs:
 
     - name: Build the Kernel
       run: |
-        # Navigate to the kernel directory and start the build process
-        cd $KERNEL_DIR
-        echo $KERNEL_DIR
+        git clone https://github.com/realme-kernel-opensource/realme_C21Y-AndroidR-kernel-source.git
+        ls 
 
     - name: Archive Kernel Artifacts
       run: |
