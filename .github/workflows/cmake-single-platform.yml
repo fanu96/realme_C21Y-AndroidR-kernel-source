@@ -1,12 +1,12 @@
 name: Kernel Build
 
 on:
-  push:
+  push: 
     branches:
-      - android-4.14  # Trigger build on push to the specified branch
+      - master # Trigger build on push to the specified branch
   pull_request:
     branches:
-      - android-4.14  # Trigger build on pull request targeting the specified branch
+      - master  # Trigger build on pull request targeting the specified branch
 
 jobs:
   build:
