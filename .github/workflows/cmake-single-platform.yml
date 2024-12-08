@@ -50,7 +50,7 @@ jobs:
     - name: Build the Kernel
       run: |
         git clone https://github.com/realme-kernel-opensource/realme_C21Y-AndroidR-kernel-source.git
-        make O=out ARCH=arm64 arch/arm64/configs/sprd_sharkl5Pro_defconfig
+        make O=out ARCH=arm64 sprd_sharkl5Pro_defconfig
         make O=out ARCH=arm64 CC=$CC LD=$LD CROSS_COMPILE=clang- HOSTCC=clang -j$(nproc)
         
 
