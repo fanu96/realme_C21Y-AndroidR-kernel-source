@@ -50,6 +50,7 @@ jobs:
       run: |
         # Navigate to the kernel directory and start the build process
         cd $KERNEL_DIR
+        echo $KERNEL_DIR
 
         # Use the provided configuration or set the default config
         make O=out ARCH=arm64 defconfig  # Update the defconfig if necessary for your target architecture
