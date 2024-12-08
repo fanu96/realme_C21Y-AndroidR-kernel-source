@@ -52,7 +52,7 @@ jobs:
         cd $KERNEL_DIR
 
         # Use the provided configuration or set the default config
-        make O=out ARCH=arm64  # Update the defconfig if necessary for your target architecture
+        make O=out ARCH=arm64 defconfig  # Update the defconfig if necessary for your target architecture
 
         # Start the kernel build using Clang
         make O=out ARCH=arm64 CC=$CC LD=$LD CROSS_COMPILE=clang- HOSTCC=clang -j$(nproc)
