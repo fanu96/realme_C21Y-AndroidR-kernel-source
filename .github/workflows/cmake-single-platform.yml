@@ -16,7 +16,7 @@ jobs:
       MY_WORKSPACE: ${{ github.workspace }}/ws # Using github.workspace as the base
 
     steps:
-    # Free up space first (Solution 2)
+    # Free up space first
     - name: Maximize Build Space
       uses: easimon/maximize-build-space@v10
       with:
@@ -25,13 +25,19 @@ jobs:
         remove-dotnet: 'true'
         remove-android: 'true'
         remove-haskell: 'true'
-        # Add other tools to remove if needed
+        # remove-swift: 'true' # Consider removing other large unused tools
+
+    # Install essential build dependencies AFTER maximizing space
+    - name: Install Build Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends bc bison build-essential cpio flex gcc git kmod libssl-dev libelf-dev python3 rsync unzip wget zip
 
     - name: Checkout kernel source (Shallow Clone)
       uses: actions/checkout@v4
       with:
         path: ${{ env.MY_WORKSPACE }}/source/msm-5.4
-        fetch-depth: 1 # <-- Shallow clone
+        fetch-depth: 1
 
     - name: Set up directories
       run: |
@@ -50,71 +56,81 @@ jobs:
         echo "Cloning complete."
         df -h # Check disk space immediately after cloning
 
+    # Correctly export environment variables using fixed paths
     - name: Export environment variables
       run: |
         echo "Setting environment variables..."
         echo "SOURCE_ROOT=${{ env.MY_WORKSPACE }}/source" >> $GITHUB_ENV
         echo "PREBUILTS_PATH=${{ env.MY_WORKSPACE }}/source/prebuilts" >> $GITHUB_ENV
-        echo "MAKE_PATH=${{ env.PREBUILTS_PATH }}/build-tools/linux-x86/bin/" >> $GITHUB_ENV
-        echo "GCC_CROSS_COMPILE=${{ env.PREBUILTS_PATH }}/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-" >> $GITHUB_ENV
-        echo "CLANG_PATH=${{ env.PREBUILTS_PATH }}/clang/host/linux-x86/${{ env.CLANG_VERSION }}/bin" >> $GITHUB_ENV
+        # --- Construct full paths directly ---
+        echo "MAKE_PATH=${{ env.MY_WORKSPACE }}/source/prebuilts/build-tools/linux-x86/bin" >> $GITHUB_ENV
+        echo "GCC_PATH=${{ env.MY_WORKSPACE }}/source/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9" >> $GITHUB_ENV
+        echo "GCC_CROSS_COMPILE=${{ env.MY_WORKSPACE }}/source/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-" >> $GITHUB_ENV
+        echo "CLANG_PATH=${{ env.MY_WORKSPACE }}/source/prebuilts/clang/host/linux-x86/${{ env.CLANG_VERSION }}/bin" >> $GITHUB_ENV
+        echo "CLANG_TOOL_PATH=${{ env.MY_WORKSPACE }}/source/prebuilts/clang/host/linux-x86/${{ env.CLANG_VERSION }}" >> $GITHUB_ENV # Path to clang base dir, sometimes needed
+        # --- Kernel specific paths ---
         echo "KERNEL_DIR=${{ env.MY_WORKSPACE }}/source/msm-5.4" >> $GITHUB_ENV
         echo "OUT_DIR=${{ env.MY_WORKSPACE }}/source/kernel_out" >> $GITHUB_ENV
-        echo "KERNEL_SRC=${{ env.OUT_DIR }}" >> $GITHUB_ENV # Keep original KERNEL_SRC assignment, adjust if needed
+        # --- Build variables ---
         echo "CLANG_TRIPLE=aarch64-linux-gnu-" >> $GITHUB_ENV
         echo "ARCH=arm64" >> $GITHUB_ENV
-        # Prepend CLANG_PATH to PATH
-        echo "PATH=${{ env.CLANG_PATH }}:$PATH" >> $GITHUB_ENV
-        echo "CROSS_COMPILE=${{ env.GCC_CROSS_COMPILE }}" >> $GITHUB_ENV
+        echo "CROSS_COMPILE=aarch64-linux-android-" >> $GITHUB_ENV # Use the base name, make will prepend path if needed or find it via PATH
+        # echo "CROSS_COMPILE=${{ env.GCC_CROSS_COMPILE }}" >> $GITHUB_ENV # Alternative: full path prefix
+        echo "PATH=${{ env.MY_WORKSPACE }}/source/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin:${{ env.MY_WORKSPACE }}/source/prebuilts/clang/host/linux-x86/${{ env.CLANG_VERSION }}/bin:${{ env.MY_WORKSPACE }}/source/prebuilts/build-tools/linux-x86/bin:$PATH" >> $GITHUB_ENV # Prepend all tool paths to PATH
 
     - name: Verify Paths and Tools
       run: |
         echo "--- Environment Variables ---"
-        env | grep -E 'SOURCE_ROOT|PREBUILTS_PATH|MAKE_PATH|GCC_CROSS_COMPILE|CLANG_PATH|KERNEL_DIR|OUT_DIR|KERNEL_SRC|ARCH|CROSS_COMPILE|CLANG_TRIPLE' | sort
+        env | grep -E 'SOURCE_ROOT|PREBUILTS_PATH|MAKE_PATH|GCC_PATH|GCC_CROSS_COMPILE|CLANG_PATH|CLANG_TOOL_PATH|KERNEL_DIR|OUT_DIR|ARCH|CROSS_COMPILE|CLANG_TRIPLE' | sort
         echo "--- Checking Tool Paths ---"
         ls -l $MAKE_PATH/make || echo "Make not found!"
         ls -l ${GCC_CROSS_COMPILE}gcc || echo "GCC cross-compiler not found!"
         ls -l $CLANG_PATH/clang || echo "Clang compiler not found!"
         echo "--- PATH ---"
         echo "$PATH"
-        echo "--- Checking Clang Version ---"
-        ${CLANG_PATH}/clang --version || echo "Clang version check failed!"
+        echo "--- Checking Tool Versions ---"
+        make --version || echo "Make check failed!"
+        ${GCC_CROSS_COMPILE}gcc --version || echo "GCC check failed!"
+        clang --version || echo "Clang check failed!" # Use clang directly as it should be in PATH now
         df -h # Check disk space before build
 
     - name: Build Kernel (defconfig)
       run: |
         cd $KERNEL_DIR
         echo "Running make defconfig..."
-        $MAKE_PATH/make O=$OUT_DIR ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE CLANG_TRIPLE=$CLANG_TRIPLE \
-          CC="clang" HOSTCC="clang" \
+        # Use variables directly from env, make should find tools via PATH now
+        make O=$OUT_DIR ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE CLANG_TRIPLE=$CLANG_TRIPLE \
+          CC=clang HOSTCC=clang \
           $DEFCONFIG
 
     - name: Build Kernel (Image & DTBs)
       run: |
         cd $KERNEL_DIR
         echo "Running make kernel image and DTBs..."
-        $MAKE_PATH/make -j$(nproc) O=$OUT_DIR ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE CLANG_TRIPLE=$CLANG_TRIPLE \
-          CC="clang" HOSTCC="clang"
+        # Use variables directly from env, make should find tools via PATH now
+        make -j$(nproc) O=$OUT_DIR ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE CLANG_TRIPLE=$CLANG_TRIPLE \
+          CC=clang HOSTCC=clang
         echo "Build finished."
         df -h # Check disk space immediately after build
 
-    # ✅ Add detailed disk usage check
     - name: Check Disk Usage After Build
+      if: always() # Run even if build fails to see state
       run: |
         echo "--- Overall Disk Usage ---"
         df -h
         echo "--- Workspace Directory Usage ---"
-        du -sh ${{ env.MY_WORKSPACE }}/* || true # Use '|| true' in case a subdir was removed or empty
+        du -sh ${{ env.MY_WORKSPACE }}/* || true
         echo "--- Kernel Output Directory Usage ---"
         du -sh ${{ env.OUT_DIR }} || true
 
-    # ✅ Add artifact upload
     - name: Upload Kernel Artifacts
       uses: actions/upload-artifact@v4
+      if: success() # Only upload if build succeeds
       with:
         name: kernel-build-${{ github.run_id }} # Unique name per run
         path: |
           ${{ env.OUT_DIR }}/arch/${{ env.KERNEL_ARCH }}/boot/Image*
-          ${{ env.OUT_DIR }}/arch/${{ env.KERNEL_ARCH }}/boot/dts/**/*.dtb # Include DTBs from subdirs if any
-          ${{ env.OUT_DIR }}/.config # Upload the final config too
-        if: success() # Only upload if build succeeds
+          ${{ env.OUT_DIR }}/arch/${{ env.KERNEL_ARCH }}/boot/dts/**/*.dtb
+          ${{ env.OUT_DIR }}/.config
+          # Optional: Upload full output dir for debugging failures
+          # ${{ env.OUT_DIR }}
