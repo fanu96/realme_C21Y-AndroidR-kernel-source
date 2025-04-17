@@ -50,18 +50,6 @@ jobs:
         echo "Cloning complete."
         df -h # Check disk space immediately after cloning
 
-    # 🔥 Prune unused Clang versions (Key Optimization!)
-    - name: Prune unused Clang versions
-      run: |
-        echo "Pruning Clang directory..."
-        cd ${{ env.MY_WORKSPACE }}/source/prebuilts/clang/host/linux-x86
-        ls -lh # Show current clang versions
-        # Keep only the required version, remove everything else
-        find . -maxdepth 1 ! -name '.' ! -name '..' ! -name $CLANG_VERSION -exec rm -rf {} +
-        echo "Pruning complete. Remaining contents:"
-        ls -lh
-        df -h # Check disk space after pruning
-
     - name: Export environment variables
       run: |
         echo "Setting environment variables..."
