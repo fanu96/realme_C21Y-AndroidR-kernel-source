@@ -10,6 +10,9 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      # Ensure our clang binary and wrapper scripts are in PATH for all steps
+      PATH: ${{ github.workspace }}/clang/bin:${{ env.PATH }}
 
     steps:
       - name: 📜 Checkout kernel source
@@ -28,32 +31,29 @@ jobs:
 
       - name: 📥 Download Android Clang Toolchain
         run: |
-          echo "Downloading Android (6573524 based on r383902b) Clang 11.0.2 toolchain..."
+          echo "Downloading Android Clang (6573524 based on r383902b) 11.0.2..."
           git clone --depth=1 https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-6573524 clang
-          echo "$GITHUB_WORKSPACE/clang/bin" >> $GITHUB_PATH
-          echo "Clang download complete"
+          echo "Clang toolchain is ready"
 
       - name: 🚀 Build Kernel & DTBs
         working-directory: kernel_source
         run: |
-          # Ensure downloaded clang is first in PATH
-          export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
-          echo "Using clang from: $(which clang)"
+          echo "Using $(which clang) for host compilation"
           clang --version
 
-          # Provide YAML flags for scripts/dtc
+          # YAML flags for scripts/dtc
           export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig
           export YAML_CFLAGS=$(pkg-config --cflags yaml-0.1)
           export YAML_LIBS=$(pkg-config --libs yaml-0.1)
 
           # Core environment
-          export ARCH=${{ env.ARCH }}
+          export ARCH=${ARCH}
           export KBUILD_BUILD_USER="GitHubActions"
           export KBUILD_BUILD_HOST="github.com"
 
-          # LLVM toolchain
-          export CC=clang
-          export CXX=clang++
+          # Target compiler (clang with aarch64 triple)
+          export CC=aarch64-linux-gnu-clang
+          export CXX=aarch64-linux-gnu-clang++
           export LD=ld.lld
           export AR=llvm-ar
           export NM=llvm-nm
@@ -64,34 +64,31 @@ jobs:
           export LLVM=1
           export LLVM_IAS=1
 
-          # Force host compiler to clang
+          # Host compiler for building tools
           export HOSTCC=clang
           export HOSTCXX=clang++
-          export KBUILD_HOSTCC=clang
-          export KBUILD_HOSTCXX=clang++
 
-          # Cross-compile prefixes
+          # Cross-prefix for modules, etc
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-          # Generate defconfig using explicit CC
-          echo "Using defconfig: ${KERNEL_DEFCONFIG}"
-          make O=out ARCH=${ARCH} CC=clang HOSTCC=clang ${KERNEL_DEFCONFIG}
+          # Generate defconfig
+          echo "Applying defconfig: ${KERNEL_DEFCONFIG}"
+          make O=out ARCH=${ARCH} CC=${CC} HOSTCC=${HOSTCC} ${KERNEL_DEFCONFIG}
 
-          # Build kernel image + DTBs with explicit compilers
-          echo "Building Image.gz + DTBs with $(nproc) threads..."
+          # Build kernel image + DTBs
+          echo "Building kernel and DTBs on $(nproc) threads"
           make -j$(nproc) O=out \
-               CC=clang CXX=clang++ \
-               HOSTCC=clang HOSTCXX=clang++ \
+               CC=${CC} CXX=${CXX} \
+               HOSTCC=${HOSTCC} HOSTCXX=${HOSTCXX} \
                Image.gz dtbs
 
-          # Verify output
-          IMAGE=out/arch/${ARCH}/boot/Image.gz
-          if [ ! -f "${IMAGE}" ]; then
-            echo "❌ Build failed: ${IMAGE} not found"
+          # Verify
+          if [ ! -f out/arch/${ARCH}/boot/Image.gz ]; then
+            echo "❌ Kernel build failed"
             exit 1
           fi
-          echo "✅ Build succeeded!"
+          echo "✅ Build succeeded"
 
       - name: 📦 Prepare Artifacts
         run: |
