@@ -10,9 +10,6 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      # Ensure our clang tools are preferred in PATH for all steps
-      PATH: ${{ github.workspace }}/clang/bin:${{ env.PATH }}
 
     steps:
       - name: 📜 Checkout kernel source
@@ -27,55 +24,37 @@ jobs:
             bc bison build-essential ca-certificates cpio crossbuild-essential-arm64 \
             flex git kmod libelf-dev libncurses5-dev libssl-dev \
             make python3 rsync wget zip unzip \
-            xz-utils libyaml-dev pkg-config # Keep libyaml-dev & pkg-config
+            xz-utils libyaml-dev pkg-config
 
       - name: 📥 Download Android Clang Toolchain
         run: |
-          echo "Downloading Android (6573524 based on r383902b) Clang 11.0.2 toolchain..."
-          # Clone the specific toolchain version needed
+          echo "Downloading Android Clang (6573524 based on r383902b) 11.0.2..."
           git clone --depth=1 https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-6573524 clang
-          # Verify the PATH setup at the job level should make clang accessible
-          echo "Clang toolchain directory: $(ls clang/bin | head -n 5)"
-          echo "Clang should be available in PATH now."
+          echo "$GITHUB_WORKSPACE/clang/bin" >> $GITHUB_PATH
+          echo "Clang toolchain directory added to PATH"
 
       - name: 🚀 Build Kernel & DTBs
         working-directory: kernel_source
         run: |
-          # Verify clang is correctly found from our downloaded toolchain
-          echo "Using clang from: $(which clang)"
+          # Verify host clang is our downloaded version
+          echo "Using clang: $(which clang)"
           clang --version
 
-          # *** Add YAML link flag for host linker (Fixes dtc linking) ***
-          YAML_LINK_FLAG="-lyaml" # Default, almost always correct
-          # Optional: Try pkg-config but fall back reliably
-          if command -v pkg-config &> /dev/null; then
-              # Add standard pkgconfig path just in case
-              export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}
-              YAML_LIBS_CHECK=$(pkg-config --libs yaml-0.1 2>/dev/null)
-              if [ -n "$YAML_LIBS_CHECK" ]; then
-                  YAML_LINK_FLAG_TMP=$(echo "$YAML_LIBS_CHECK" | grep -o -- '-l[^ ]*' | head -n 1)
-                  if [ -n "$YAML_LINK_FLAG_TMP" ]; then
-                      YAML_LINK_FLAG="$YAML_LINK_FLAG_TMP"
-                  fi
-                  echo "Refined YAML link flag via pkg-config: $YAML_LINK_FLAG"
-              else
-                  echo "pkg-config found but couldn't resolve yaml-0.1, using default $YAML_LINK_FLAG"
-              fi
-          else
-              echo "pkg-config not found, using default $YAML_LINK_FLAG"
-          fi
-          # Append flag to HOSTLDFLAGS for host tool linking
-          export HOSTLDFLAGS+="$YAML_LINK_FLAG"
-          echo "Using HOSTLDFLAGS: ${HOSTLDFLAGS}"
+          # YAML flags for DTC
+          export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig
+          export YAML_LIBS=$(pkg-config --libs yaml-0.1)
+          export HOSTLDFLAGS+="$YAML_LIBS"
 
-          # Core build environment
-          export ARCH=${{ env.ARCH }}
+          # Core build env
+          export ARCH=${ARCH}
           export KBUILD_BUILD_USER="GitHubActions"
           export KBUILD_BUILD_HOST="github.com"
 
-          # LLVM toolchain for Target compilation
-          export CC=clang  # Clang uses CROSS_COMPILE / --target
+          # Use clang for target and host
+          export CC=clang
           export CXX=clang++
+          export HOSTCC=clang
+          export HOSTCXX=clang++
           export LD=ld.lld
           export AR=llvm-ar
           export NM=llvm-nm
@@ -83,41 +62,33 @@ jobs:
           export OBJDUMP=llvm-objdump
           export STRIP=llvm-strip
           export READELF=llvm-readelf
-          export LLVM=1         # Enable LLVM/Clang specific features
-          export LLVM_IAS=1       # Use LLVM integrated assembler
+          export LLVM=1
+          export LLVM_IAS=1
 
-          # LLVM toolchain for Host compilation
-          export HOSTCC=clang
-          export HOSTCXX=clang++
-          # HOSTLD will typically default to the system's ld, which is fine here
-
-          # Cross-compile prefixes (used by Kbuild and Clang's --target)
+          # Cross-compile prefixes
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-          # Generate defconfig (relies on exported env vars)
-          echo "Using defconfig: ${KERNEL_DEFCONFIG}"
+          # Generate defconfig
+          echo "Applying defconfig: ${KERNEL_DEFCONFIG}"
           make O=out ${KERNEL_DEFCONFIG}
 
-          # Build kernel image + DTBs (relies on exported env vars)
+          # Build kernel + DTBs
           echo "Building Image.gz + DTBs with $(nproc) threads..."
           make -j$(nproc) O=out Image.gz dtbs
 
           # Verify output
-          IMAGE=out/arch/${ARCH}/boot/Image.gz
-          if [ ! -f "${IMAGE}" ]; then
-            echo "❌ Build failed: ${IMAGE} not found"
+          if [ ! -f out/arch/${ARCH}/boot/Image.gz ]; then
+            echo "❌ Build failed: Image.gz not found"
             exit 1
           fi
-          echo "✅ Build succeeded!"
+          echo "✅ Build succeeded"
 
       - name: 📦 Prepare Artifacts
         run: |
           mkdir -p $GITHUB_WORKSPACE/artifact
           cp kernel_source/out/arch/${{ env.ARCH }}/boot/Image.gz $GITHUB_WORKSPACE/artifact/
-          # Use find to robustly copy DTBs, ignoring errors if none found
           find kernel_source/out/arch/${{ env.ARCH }}/boot/dts/ -name '*.dtb' -exec cp {} $GITHUB_WORKSPACE/artifact/ \; || true
-          echo "Artifacts prepared:"
           ls -l $GITHUB_WORKSPACE/artifact
 
       - name: 📤 Upload Artifacts
@@ -125,4 +96,4 @@ jobs:
         with:
           name: kernel-${{ github.run_id }}
           path: ${{ github.workspace }}/artifact/*
-          if-no-files-found: error # Keep error if Image.gz wasn't copied
+          if-no-files-found: error
