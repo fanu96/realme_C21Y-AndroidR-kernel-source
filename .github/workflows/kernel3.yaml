@@ -4,11 +4,15 @@ on:
   workflow_dispatch:
     inputs:
       INPUT_LOCALVERSION:
-        description: 'Custom localversion suffix'
+        description: 'Custom localversion suffix (e.g., -MyBuild)'
         required: false
+        default: '' # Default to empty if not provided
 
 env:
   ARCH: arm64
+  KERNEL_SOURCE_DIR: kernel_source # Define source directory path
+  CLANG_DIR: clang # Define clang directory path
+  ARTIFACT_DIR: artifact # Define artifact directory path
 
 jobs:
   build:
@@ -18,11 +22,12 @@ jobs:
     - name: 📜 Checkout kernel source
       uses: actions/checkout@v4
       with:
-        path: kernel_source
-        fetch-depth: 0
+        path: ${{ env.KERNEL_SOURCE_DIR }}
+        fetch-depth: 1 # Use fetch-depth: 1 for faster checkout unless full history is needed
 
     - name: 🔧 Install Dependencies
       run: |
+        set -e # Exit immediately if a command fails
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends \
           bc bison build-essential ca-certificates cpio crossbuild-essential-arm64 \
@@ -30,137 +35,179 @@ jobs:
           lsb-release make python3 rsync wget zip unzip \
           libyaml-dev pkg-config tar lz4
 
-    - name: 📥 Download Clang Toolchain (crDroid r353983c / Clang 11.0.2)
+    - name: 📥 Download Clang Toolchain (crDroid Clang 11 / r353983c)
       run: |
-        echo "Downloading crDroid Clang r353983c..."
-        git clone --depth=1 https://github.com/crdroidandroid/android_preb)u
-        echo "$GITHUB_WORKSPACE/clang/bin" >> $GITHUB_PATH
-        $GITHUB_WORKSPACE/clang/bin/clang --version
+        set -e
+        echo "Downloading crDroid Clang..."
+        # Corrected URL
+        git clone --depth=1 https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-6573524 ${{ env.CLANG_DIR }}
+        echo "Adding Clang to PATH..."
+        echo "$GITHUB_WORKSPACE/${{ env.CLANG_DIR }}/bin" >> $GITHUB_PATH
+        echo "Verifying Clang version..."
+        clang --version
 
     - name: 📥 Fetch and Unpack SPRD Libraries
       run: |
-        cd tools
-        git clone https://gitlab.com/Rissu-Projekt/additional.git lib64
+        set -e
+        # Ensure tools directory exists within the kernel source
+        mkdir -p ${{ env.KERNEL_SOURCE_DIR }}/tools
+        cd ${{ env.KERNEL_SOURCE_DIR }}/tools
+        echo "Cloning SPRD additional libraries..."
+        git clone --depth=1 https://gitlab.com/Rissu-Projekt/additional.git lib64
         cd lib64
+        echo "Extracting libraries..."
         for i in {01..07}; do
+          echo "Extracting part${i}.tar.xz..."
           tar -xvf part${i}.tar.xz && rm part${i}.tar.xz
         done
-      working-directory: kernel_source
+        echo "Libraries extracted into ${{ env.KERNEL_SOURCE_DIR }}/tools/lib64"
 
     - name: 🚀 Build Kernel
-      working-directory: kernel_source
+      working-directory: ${{ env.KERNEL_SOURCE_DIR }} # Work within the kernel source directory
       run: |
-        # Set and export build environment variables
+        set -e # Exit on error
+
+        # --- Environment Setup ---
+        echo "Setting up build environment..."
         export ARCH=${{ env.ARCH }}
         export KERNEL_DIR=$(pwd)
         export CLANG_TRIPLE="aarch64-linux-gnu-"
         export CROSS_COMPILE="aarch64-linux-gnu-"
         export KBUILD_BUILD_USER="GitHubActions"
         export KBUILD_BUILD_HOST="github.com"
+        # Use input for LOCALVERSION, append '-' only if not empty
         export LOCALVERSION="${{ github.event.inputs.INPUT_LOCALVERSION }}"
 
-        # Export compilers and linkers for target
-        export CC=$GITHUB_WORKSPACE/clang/bin/clang
-        export CXX=$GITHUB_WORKSPACE/clang/bin/clang++
-        export LD=$GITHUB_WORKSPACE/clang/bin/ld.lld
-        export AR=$GITHUB_WORKSPACE/clang/bin/llvm-ar
-        export NM=$GITHUB_WORKSPACE/clang/bin/llvm-nm
-        export OBJCOPY=$GITHUB_WORKSPACE/clang/bin/llvm-objcopy
-        export OBJDUMP=$GITHUB_WORKSPACE/clang/bin/llvm-objdump
-        export STRIP=$GITHUB_WORKSPACE/clang/bin/llvm-strip
-        export READELF=$GITHUB_WORKSPACE/clang/bin/llvm-readelf
+        # Clang paths relative to GITHUB_WORKSPACE
+        CLANG_BIN_PATH="$GITHUB_WORKSPACE/${{ env.CLANG_DIR }}/bin"
+        export CC="${CLANG_BIN_PATH}/clang"
+        export CXX="${CLANG_BIN_PATH}/clang++"
+        export LD="${CLANG_BIN_PATH}/ld.lld"
+        export AR="${CLANG_BIN_PATH}/llvm-ar"
+        export NM="${CLANG_BIN_PATH}/llvm-nm"
+        export OBJCOPY="${CLANG_BIN_PATH}/llvm-objcopy"
+        export OBJDUMP="${CLANG_BIN_PATH}/llvm-objdump"
+        export STRIP="${CLANG_BIN_PATH}/llvm-strip"
+        export READELF="${CLANG_BIN_PATH}/llvm-readelf"
         export LLVM=1
         export LLVM_IAS=1
 
-        # Export compilers for host
-        export HOSTCC=$GITHUB_WORKSPACE/clang/bin/clang
-        export HOSTCXX=$GITHUB_WORKSPACE/clang/bin/clang++
+        export HOSTCC="${CLANG_BIN_PATH}/clang"
+        export HOSTCXX="${CLANG_BIN_PATH}/clang++"
 
         # Handle YAML linking for DTC
         export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}
         YAML_LIBS=$(pkg-config --libs yaml-0.1 2>/dev/null || echo "-lyaml -L/usr/lib/x86_64-linux-gnu")
-        export HOST_LDFLAGS="$YAML_LIBS"
-        echo "HOST_LDFLAGS=$HOST_LDFLAGS"
+        export HOST_LDFLAGS="${YAML_LIBS}"
+        echo "HOST_LDFLAGS=${HOST_LDFLAGS}"
 
-        # Prepare output directory
-        mkdir -p out
+        # --- Config Generation ---
+        export KBUILD_OUTPUT=out # Use KBUILD_OUTPUT instead of O= for consistency
+        mkdir -p ${KBUILD_OUTPUT}
 
-        # Check for custom config
         echo "--> Checking for custom config file (stock_kernel.config)..."
         if [ ! -f "stock_kernel.config" ]; then
-          echo "❌ FATAL ERROR: Custom config file 'stock_kernel.config' not found!"
+          echo "❌ FATAL ERROR: Custom config file 'stock_kernel.config' not found in ${KERNEL_DIR}!"
           exit 1
         fi
         ls -l stock_kernel.config
 
-        # Copy custom config
-        echo "--> Copying 'stock_kernel.config' to 'out/.config'..."
-        cp stock_kernel.config out/.config
-        ls -l out/.config
-        if [ ! -f "out/.config" ]; then
-          echo "❌ FATAL ERROR: Failed to copy 'stock_kernel.config' to 'out/.config'!"
-          exit 1
+        echo "--> Copying 'stock_kernel.config' to '${KBUILD_OUTPUT}/.config'..."
+        cp stock_kernel.config ${KBUILD_OUTPUT}/.config
+        ls -l ${KBUILD_OUTPUT}/.config
+        if [ ! -f "${KBUILD_OUTPUT}/.config" ]; then
+           echo "❌ FATAL ERROR: Failed to copy 'stock_kernel.config' to '${KBUILD_OUTPUT}/.config'!"
+           exit 1
         fi
-        echo "✅ Custom config 'out/.config' copied."
+        echo "✅ Custom config '${KBUILD_OUTPUT}/.config' prepared."
 
-        # Update config with defaults
         echo "--> Updating config with defaults using 'make olddefconfig'..."
-        make O=out \
+        # Pass variables directly to make
+        make \
+             KBUILD_OUTPUT=${KBUILD_OUTPUT} \
              ARCH=${ARCH} \
              CROSS_COMPILE=${CROSS_COMPILE} \
-             CC="${CC}" CXX="${CXX}" \
+             LOCALVERSION=${LOCALVERSION} \
+             CC="${CC}" CXX="${CXX}" LD="${LD}" AR="${AR}" NM="${NM}" OBJCOPY="${OBJCOPY}" OBJDUMP="${OBJDUMP}" STRIP="${STRIP}" READELF="${READELF}" \
              HOSTCC="${HOSTCC}" HOSTCXX="${HOSTCXX}" \
              HOSTLDFLAGS="${HOST_LDFLAGS}" \
+             LLVM=1 LLVM_IAS=1 \
              olddefconfig
         echo "✅ Config updated with defaults."
 
-        # Check module signature settings
-        if grep -q "CONFIG_MODULE_SIG_FORCE=y" out/.config; then
-          echo "⚠️ Warning: CONFIG_MODULE_SIG_FORCE is enabled. Ensure signing key exists."
+        # Check module signature settings (optional but good)
+        if grep -q "CONFIG_MODULE_SIG_FORCE=y" ${KBUILD_OUTPUT}/.config; then
+          echo "⚠️ Warning: CONFIG_MODULE_SIG_FORCE=y is set."
           if [ ! -f "certs/signing_key.pem" ]; then
-            echo "❌ FATAL ERROR: Signing key 'certs/signing_key.pem' not found!"
-            exit 1
+            echo "❌ ERROR: Module signing is forced, but 'certs/signing_key.pem' not found!"
+            # Consider exiting if signing is mandatory for boot exit 1
+          else
+            echo "✅ Found 'certs/signing_key.pem'."
           fi
         fi
 
-        # Build kernel
-        echo "Building kernel with $(nproc) threads..."
-        make -j$(nproc) O=out V=1 \
-             CC="${CC}" CXX="${CXX}" \
+        # --- Build Kernel ---
+        echo "Building kernel with $(nproc) threads... Outputting to build.log"
+        make -j$(nproc) V=1 \
+             KBUILD_OUTPUT=${KBUILD_OUTPUT} \
+             ARCH=${ARCH} \
+             CROSS_COMPILE=${CROSS_COMPILE} \
+             LOCALVERSION=${LOCALVERSION} \
+             CC="${CC}" CXX="${CXX}" LD="${LD}" AR="${AR}" NM="${NM}" OBJCOPY="${OBJCOPY}" OBJDUMP="${OBJDUMP}" STRIP="${STRIP}" READELF="${READELF}" \
              HOSTCC="${HOSTCC}" HOSTCXX="${HOSTCXX}" \
              HOSTLDFLAGS="${HOST_LDFLAGS}" \
+             LLVM=1 LLVM_IAS=1 \
              Image.gz dtbs 2>&1 | tee build.log
+             # Add dtbo.img here if needed for your specific device variant
 
-        # Check build output
-        KERNEL_IMAGE_PATH="out/arch/${ARCH}/boot/Image.gz"
+        # --- Verify Build Output ---
+        KERNEL_IMAGE_PATH="${KBUILD_OUTPUT}/arch/${ARCH}/boot/Image.gz"
         if [ ! -f "${KERNEL_IMAGE_PATH}" ]; then
           echo "❌ Kernel build failed! Output file '${KERNEL_IMAGE_PATH}' not found."
-          cat build.log
+          echo "--- Build Log Tail ---"
+          tail -n 50 build.log # Show last 50 lines of log on failure
           exit 1
         fi
-        echo "✅ Kernel build successful!"
+        echo "✅ Kernel build successful: ${KERNEL_IMAGE_PATH}"
         echo "Generated DTBs:"
-        ls -l out/arch/${ARCH}/boot/dts/
+        ls -l ${KBUILD_OUTPUT}/arch/${ARCH}/boot/dts/
 
     - name: 📦 Package Artifact
       run: |
-        mkdir -p $GITHUB_WORKSPACE/artifact
-        cp kernel_source/out/arch/${{ env.ARCH }}/boot/Image.gz $GITHUB_WORKSPACE/artifact/
-        find kernel_source/out/arch/${{ env.ARCH }}/boot/dts/ -name '*.dtb' -exec cp {} $GITHUB_WORKSPACE/artifact/ \;
-        cd $GITHUB_WORKSPACE/artifact
-        zip -r kernel-${{ github.run_id }}.zip .
-      working-directory: kernel_source
+        set -e
+        echo "Creating artifact directory..."
+        mkdir -p ${{ env.ARTIFACT_DIR }}
+
+        # Define paths relative to workspace
+        KSOURCE=$GITHUB_WORKSPACE/${{ env.KERNEL_SOURCE_DIR }}
+        KOUTPUT=$KSOURCE/out # Matches KBUILD_OUTPUT used in build step
+        DEST=$GITHUB_WORKSPACE/${{ env.ARTIFACT_DIR }}
+
+        echo "Copying Image.gz..."
+        cp ${KOUTPUT}/arch/${{ env.ARCH }}/boot/Image.gz ${DEST}/
+
+        echo "Copying DTBs..."
+        find ${KOUTPUT}/arch/${{ env.ARCH }}/boot/dts/ -name '*.dtb' -exec cp {} ${DEST}/ \;
+        # Copy dtbo.img if built: cp ${KOUTPUT}/arch/${{ env.ARCH }}/boot/dtbo.img ${DEST}/
+
+        echo "Creating zip archive..."
+        cd ${DEST}
+        zip -r kernel-build-${{ github.run_id }}.zip .
+        echo "Artifact packaged in ${DEST}/kernel-build-${{ github.run_id }}.zip"
 
     - name: 📜 Save Build Log
-      if: always()
+      if: always() # Run even if previous steps fail
       uses: actions/upload-artifact@v4
       with:
         name: build-log-${{ github.run_id }}
-        path: kernel_source/build.log
+        # Path to the log file created in the build step
+        path: ${{ env.KERNEL_SOURCE_DIR }}/build.log
+        if-no-files-found: warn # Don't fail if log somehow doesn't exist
 
     - name: 📤 Upload Kernel Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: kernel-${{ github.run_id }}
-        path: ${{ github.workspace }}/artifact/kernel-${{ github.run_id }}.zip
-        if-no-files-found: error
+        name: kernel-package-${{ github.run_id }} # Artifact name in GitHub UI
+        # Path to the zip file created in the packaging step
+        path: ${{ env.ARTIFACT_DIR }}/kernel-build-${{ github.run_id }}.zip
+        if-no-files-found: error # Fail if the zip file wasn't created
