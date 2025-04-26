@@ -73,7 +73,7 @@ jobs:
 
         # Build the kernel with Clang, suppressing warnings as errors
         echo "Building kernel (using $(nproc) threads)..."
-        make -j$(nproc) O=out \
+        make -j$(nproc) O=out V=1\
              CC="${CC}" CXX="${CXX}" \
              HOSTCC="${HOSTCC}" HOSTCXX="${HOSTCXX}" \
              HOSTLDFLAGS="${HOST_LDFLAGS}" \
