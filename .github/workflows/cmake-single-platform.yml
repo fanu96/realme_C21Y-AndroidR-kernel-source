@@ -71,32 +71,13 @@ jobs:
         echo "Generating kernel config using ${{ env.KERNEL_DEFCONFIG }}..."
         make O=out ARCH=${ARCH} ${{ env.KERNEL_DEFCONFIG }}
 
-        # Disable stack protector options
-        echo "Disabling CONFIG_CC_STACKPROTECTOR and CONFIG_CC_STACKPROTECTOR_STRONG..."
-        scripts/config --file out/.config --disable CONFIG_CC_STACKPROTECTOR
-        scripts/config --file out/.config --disable CONFIG_CC_STACKPROTECTOR_STRONG
-
         # Build the kernel
         echo "Building kernel (using $(nproc) threads)..."
         make -j$(nproc) O=out \
              CC=${CC} CXX=${CXX} \
              HOSTCC=${HOSTCC} HOSTCXX=${HOSTCXX} \
              HOSTLDFLAGS="${HOST_LDFLAGS}" \
-             Image.gz dtbs \
-             KCFLAGS="-Wno-error=misleading-indentation" \
-             KCFLAGS+=" -Wno-error=array-compare" \
-             KCFLAGS+=" -Wno-address-of-packed-member" \
-             KCFLAGS+=" -Wno-error=address" \
-             KCFLAGS+=" -Wno-error=stringop-overread" \
-             KCFLAGS+=" -Wno-error=format" \
-             KCFLAGS+=" -Wno-error=enum-int-mismatch" \
-             KCFLAGS+=" -Wno-error=format-extra-args" \
-             KCFLAGS+=" -Wno-error=memset-elt-size" \
-             KCFLAGS+=" -Wno-error=sizeof-pointer-memaccess" \
-             KCFLAGS+=" -Wno-error=strict-prototypes" \
-             KCFLAGS+=" -Wno-error=unused-variable" \
-             KCFLAGS+=" -Wno-error=uninitialized" \
-             KCFLAGS+=" -Wno-error=pointer-to-int-cast"
+             Image.gz dtbs
 
         # Check if the build was successful
         KERNEL_IMAGE_PATH="out/arch/${ARCH}/boot/Image.gz"
