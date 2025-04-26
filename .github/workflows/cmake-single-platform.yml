@@ -51,11 +51,9 @@ jobs:
           export KBUILD_BUILD_USER="GitHubActions"
           export KBUILD_BUILD_HOST="github.com"
 
-          # Full LLVM toolchain
+          # LLVM toolchain
           export CC=clang
-          export HOSTCC=clang
           export CXX=clang++
-          export HOSTCXX=clang++
           export LD=ld.lld
           export AR=llvm-ar
           export NM=llvm-nm
@@ -66,17 +64,26 @@ jobs:
           export LLVM=1
           export LLVM_IAS=1
 
+          # Force host compiler to clang
+          export HOSTCC=clang
+          export HOSTCXX=clang++
+          export KBUILD_HOSTCC=clang
+          export KBUILD_HOSTCXX=clang++
+
           # Cross-compile prefixes
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-          # Generate defconfig
+          # Generate defconfig using explicit CC
           echo "Using defconfig: ${KERNEL_DEFCONFIG}"
-          make O=out ARCH=${ARCH} ${KERNEL_DEFCONFIG}
+          make O=out ARCH=${ARCH} CC=clang HOSTCC=clang ${KERNEL_DEFCONFIG}
 
-          # Build kernel image + DTBs
+          # Build kernel image + DTBs with explicit compilers
           echo "Building Image.gz + DTBs with $(nproc) threads..."
-          make -j$(nproc) O=out Image.gz dtbs
+          make -j$(nproc) O=out \
+               CC=clang CXX=clang++ \
+               HOSTCC=clang HOSTCXX=clang++ \
+               Image.gz dtbs
 
           # Verify output
           IMAGE=out/arch/${ARCH}/boot/Image.gz
