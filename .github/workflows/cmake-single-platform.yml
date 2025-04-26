@@ -24,7 +24,7 @@ jobs:
             bc bison build-essential ca-certificates cpio crossbuild-essential-arm64 \
             flex git kmod libelf-dev libncurses5-dev libssl-dev \
             make python3 rsync wget zip unzip \
-            xz-utils
+            xz-utils libyaml-dev
 
       - name: 📥 Download Android Clang Toolchain
         run: |
