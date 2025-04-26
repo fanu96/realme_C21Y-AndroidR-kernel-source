@@ -1,10 +1,9 @@
-name: Build Kernel for Realme C21Y (RMX3261/RMX3263) using Custom Config
+name: Build Kernel for Realme C21Y (RMX3261/RMX3263)
 
 on:
   workflow_dispatch: # Allows manual triggering
 
 env:
-  # KERNEL_DEFCONFIG is removed as we use a custom config file
   ARCH: arm64
 
 jobs:
@@ -15,7 +14,7 @@ jobs:
     - name: 📜 Checkout kernel source
       uses: actions/checkout@v4
       with:
-        path: kernel_source # Checks out your kernel source to this directory
+        path: kernel_source # Checks out your modified source
 
     - name: 🔧 Install Dependencies
       run: |
@@ -26,39 +25,19 @@ jobs:
           lsb-release make python3 rsync wget zip unzip \
           libyaml-dev pkg-config
 
-    # Optional Caching Steps (Uncomment if desired)
-    # - name: Cache apt packages
-    #   uses: actions/cache@v4
-    #   with:
-    #     path: /var/cache/apt/archives
-    #     key: ${{ runner.os }}-apt-${{ hashFiles('**/lockfiles') }} # Adjust key as needed
-    #     restore-keys: |
-    #       ${{ runner.os }}-apt-
-    #
-    # - name: Cache Clang Toolchain
-    #   id: cache-clang
-    #   uses: actions/cache@v4
-    #   with:
-    #     path: clang
-    #     key: ${{ runner.os }}-clang-r353983c
-
     - name: 📥 Download Clang Toolchain (crDroid r353983c / Clang 11.0.2)
-      # if: steps.cache-clang.outputs.cache-hit != 'true' # Uncomment if using cache
       run: |
         echo "Downloading crDroid Clang r353983c..."
         git clone --depth=1 https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-6573524 clang
-
-    - name: Add Clang to PATH and Verify
-      run: |
         echo "$GITHUB_WORKSPACE/clang/bin" >> $GITHUB_PATH
         $GITHUB_WORKSPACE/clang/bin/clang --version
 
-    - name: 🚀 Build Kernel with Custom Config
-      working-directory: kernel_source # Sets the working directory for this step
+    - name: 🚀 Build Kernel
+      working-directory: kernel_source
       run: |
         # Set and export build environment variables
         export ARCH=${{ env.ARCH }}
-        export KERNEL_DIR=$(pwd) # pwd is now $GITHUB_WORKSPACE/kernel_source
+        export KERNEL_DIR=$(pwd)
         export CLANG_TRIPLE="aarch64-linux-gnu-"
         export CROSS_COMPILE="aarch64-linux-gnu-"
         export KBUILD_BUILD_USER="GitHubActions"
@@ -87,23 +66,16 @@ jobs:
         export HOST_LDFLAGS="$YAML_LIBS"
         echo "HOST_LDFLAGS=$HOST_LDFLAGS"
 
-        # --- Use Custom Config ---
-        # Prepare output directory and copy custom config
-        echo "Preparing output directory..."
-        mkdir -p out # Ensure the output directory exists
-        echo "Copying custom kernel config (stock_kernel.config)..."
-        # Check if the custom config file exists in the root of the checked-out source
-        if [ ! -f "stock_kernel.config" ]; then
-          echo "❌ Custom config file 'stock_kernel.config' not found in kernel source root!"
-          exit 1
-        fi
-        # Copy the custom config from source root to out/.config
+        # Copy custom config to out/.config
+        echo "Copying custom config file to out/.config..."
         cp stock_kernel.config out/.config
-        echo "✅ Custom config copied."
-        # --- End Custom Config Section ---
 
-        # Build the kernel with Clang using the copied .config
-        echo "Building kernel using custom config (using $(nproc) threads)..."
+        # Run olddefconfig to handle any missing configurations
+        echo "Running make olddefconfig..."
+        make O=out ARCH=${ARCH} olddefconfig
+
+        # Build the kernel with Clang
+        echo "Building kernel (using $(nproc) threads)..."
         make -j$(nproc) O=out V=1 \
              CC="${CC}" CXX="${CXX}" \
              HOSTCC="${HOSTCC}" HOSTCXX="${HOSTCXX}" \
@@ -120,19 +92,13 @@ jobs:
 
     - name: 📦 Prepare Artifact
       run: |
-        # Create artifact directory relative to the workspace root
         mkdir -p $GITHUB_WORKSPACE/artifact
-        # Copy the kernel image
         cp kernel_source/out/arch/${{ env.ARCH }}/boot/Image.gz $GITHUB_WORKSPACE/artifact/
-        # Find and copy all dtb files
         find kernel_source/out/arch/${{ env.ARCH }}/boot/dts/ -name '*.dtb' -exec cp {} $GITHUB_WORKSPACE/artifact/ \;
-        # Display contents of the artifact directory
-        echo "Contents of artifact directory:"
-        ls -R $GITHUB_WORKSPACE/artifact
 
     - name: 📤 Upload Kernel Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: kernel-${{ github.run_id }} # Unique name for the artifact zip
-        path: ${{ github.workspace }}/artifact/* # Upload all files in the artifact dir
-        if-no-files-found: error # Fail the workflow if no files are found to upload
+        name: kernel-${{ github.run_id }}
+        path: ${{ github.workspace }}/artifact/*
+        if-no-files-found: error
