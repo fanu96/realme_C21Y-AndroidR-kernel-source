@@ -1,9 +1,10 @@
-name: Build Kernel for Realme C21Y (RMX3261/RMX3263) using Custom Config V2
+name: Build Kernel for Realme C21Y (RMX3261/RMX3263) with Custom Config
 
 on:
   workflow_dispatch: # Allows manual triggering
 
 env:
+  # KERNEL_DEFCONFIG removed - using custom file
   ARCH: arm64
 
 jobs:
@@ -14,7 +15,7 @@ jobs:
     - name: 📜 Checkout kernel source
       uses: actions/checkout@v4
       with:
-        path: kernel_source # Checks out your kernel source to this directory
+        path: kernel_source # Checks out your modified source
 
     - name: 🔧 Install Dependencies
       run: |
@@ -25,39 +26,19 @@ jobs:
           lsb-release make python3 rsync wget zip unzip \
           libyaml-dev pkg-config
 
-    # --- Optional Caching Steps (Uncomment if desired) ---
-    # - name: Cache apt packages
-    #   uses: actions/cache@v4
-    #   with:
-    #     path: /var/cache/apt/archives
-    #     key: ${{ runner.os }}-apt-${{ hashFiles('**/lockfiles') }} # Adjust key as needed
-    #     restore-keys: |
-    #       ${{ runner.os }}-apt-
-    #
-    # - name: Cache Clang Toolchain
-    #   id: cache-clang
-    #   uses: actions/cache@v4
-    #   with:
-    #     path: clang
-    #     key: ${{ runner.os }}-clang-r353983c
-
     - name: 📥 Download Clang Toolchain (crDroid r353983c / Clang 11.0.2)
-      # if: steps.cache-clang.outputs.cache-hit != 'true' # Uncomment if using cache
       run: |
         echo "Downloading crDroid Clang r353983c..."
         git clone --depth=1 https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-6573524 clang
-
-    - name: Add Clang to PATH and Verify
-      run: |
         echo "$GITHUB_WORKSPACE/clang/bin" >> $GITHUB_PATH
         $GITHUB_WORKSPACE/clang/bin/clang --version
 
-    - name: 🚀 Build Kernel with Custom Config
-      working-directory: kernel_source # Sets the working directory for this step
+    - name: 🚀 Build Kernel
+      working-directory: kernel_source # Working directory is kernel_source
       run: |
         # Set and export build environment variables
         export ARCH=${{ env.ARCH }}
-        export KERNEL_DIR=$(pwd) # pwd is now $GITHUB_WORKSPACE/kernel_source
+        export KERNEL_DIR=$(pwd)
         export CLANG_TRIPLE="aarch64-linux-gnu-"
         export CROSS_COMPILE="aarch64-linux-gnu-"
         export KBUILD_BUILD_USER="GitHubActions"
@@ -82,23 +63,16 @@ jobs:
 
         # Handle YAML linking for DTC
         export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}
-        # Try pkg-config first, provide specific fallback if it fails
-        YAML_LIBS=$(pkg-config --libs yaml-0.1 2>/dev/null)
-        if [ -z "$YAML_LIBS" ]; then
-          echo "Warning: pkg-config couldn't find yaml-0.1, using fallback HOST_LDFLAGS=-lyaml"
-          YAML_LIBS="-lyaml -L/usr/lib/x86_64-linux-gnu" # Added specific library path for fallback
-        else
-          echo "Using HOST_LDFLAGS from pkg-config: $YAML_LIBS"
-        fi
+        YAML_LIBS=$(pkg-config --libs yaml-0.1 2>/dev/null || echo "-lyaml -L/usr/lib/x86_64-linux-gnu")
         export HOST_LDFLAGS="$YAML_LIBS"
-        echo "Final HOST_LDFLAGS to be used: $HOST_LDFLAGS" # Log the final value clearly
+        echo "HOST_LDFLAGS=$HOST_LDFLAGS"
 
-        # --- Use Custom Config ---
+        # --- MODIFIED SECTION: Use Custom Config ---
         echo "Preparing output directory..."
-        mkdir -p out # Ensure the output directory exists
+        mkdir -p out
 
         echo "--> Checking for custom config file (stock_kernel.config) in current directory ($(pwd))..."
-        ls -l stock_kernel.config # List the file specifically if it exists
+        # Check if the custom config file exists in the root of the checked-out source (current dir)
         if [ ! -f "stock_kernel.config" ]; then
           echo "---------------------------------------------------------------------"
           echo "❌ FATAL ERROR: Custom config file 'stock_kernel.config' not found!"
@@ -109,12 +83,14 @@ jobs:
           echo "---------------------------------------------------------------------"
           exit 1
         fi
+        ls -l stock_kernel.config
 
         echo "--> Attempting to copy 'stock_kernel.config' to 'out/.config'..."
+        # Copy the custom config from source root to out/.config
         cp stock_kernel.config out/.config
 
         echo "--> Verifying presence and content of 'out/.config'..."
-        ls -l out/.config # *** ADDED VERIFICATION ***
+        ls -l out/.config
         if [ ! -f "out/.config" ]; then
            echo "---------------------------------------------------------------------"
            echo "❌ FATAL ERROR: Failed to copy 'stock_kernel.config' to 'out/.config'!"
@@ -123,13 +99,14 @@ jobs:
            exit 1
         fi
         echo "   'out/.config' exists. First 5 lines:"
-        head -n 5 out/.config # Show the first few lines to confirm it's not empty/wrong
-        echo "✅ Custom config 'out/.config' seems okay."
-        # --- End Custom Config Section ---
+        head -n 5 out/.config
+        echo "✅ Custom config 'out/.config' copied and verified."
+        # --- END MODIFIED SECTION ---
 
-        # Build the kernel with Clang using the copied .config
-        echo "Building kernel using custom 'out/.config' (using $(nproc) threads)..."
-        make -j$(nproc) O=out V=1 \
+        # Build the kernel with Clang using the copied custom config
+        echo "Building kernel using provided 'stock_kernel.config' (now as out/.config) (using $(nproc) threads)..."
+        # This make command will use the out/.config file we just copied
+        make -j$(nproc) O=out V=1\
              CC="${CC}" CXX="${CXX}" \
              HOSTCC="${HOSTCC}" HOSTCXX="${HOSTCXX}" \
              HOSTLDFLAGS="${HOST_LDFLAGS}" \
@@ -148,12 +125,10 @@ jobs:
         mkdir -p $GITHUB_WORKSPACE/artifact
         cp kernel_source/out/arch/${{ env.ARCH }}/boot/Image.gz $GITHUB_WORKSPACE/artifact/
         find kernel_source/out/arch/${{ env.ARCH }}/boot/dts/ -name '*.dtb' -exec cp {} $GITHUB_WORKSPACE/artifact/ \;
-        echo "Contents of artifact directory:"
-        ls -R $GITHUB_WORKSPACE/artifact
 
     - name: 📤 Upload Kernel Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: kernel-${{ github.run_id }} # Unique name for the artifact zip
-        path: ${{ github.workspace }}/artifact/* # Upload all files in the artifact dir
-        if-no-files-found: error # Fail the workflow if no files are found to upload
+        name: kernel-${{ github.run_id }}
+        path: ${{ github.workspace }}/artifact/*
+        if-no-files-found: error
