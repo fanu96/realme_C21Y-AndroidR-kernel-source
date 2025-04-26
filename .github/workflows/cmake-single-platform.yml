@@ -1,0 +1,107 @@
+name: Build Kernel for Realme C21Y (RMX3261/RMX3263)
+
+on:
+  workflow_dispatch: # Allows manual triggering
+
+env:
+  KERNEL_DEFCONFIG: sprd_sharkl5Pro_defconfig
+  ARCH: arm64
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: 📜 Checkout kernel source
+      uses: actions/checkout@v4
+      with:
+        path: kernel_source # Checks out your modified source
+
+    - name: 🔧 Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          bc bison build-essential ca-certificates cpio crossbuild-essential-arm64 \
+          flex git kmod libelf-dev libncurses5-dev libssl-dev \
+          lsb-release make python3 rsync wget zip unzip \
+          libyaml-dev # 'patch' command no longer needed
+
+    - name: 📥 Download Clang Toolchain (crDroid r353983c / Clang 9.0.3)
+      run: |
+        echo "Downloading crDroid Clang r353983c..."
+        git clone --depth=1 https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-6573524 clang
+        echo "$GITHUB_WORKSPACE/clang/bin" >> $GITHUB_PATH
+        clang --version
+
+    # --- NO PATCH STEP NEEDED ---
+
+    - name: 🚀 Build Kernel
+      working-directory: kernel_source
+      run: |
+        # Set and export build environment variables
+        export ARCH=${{ env.ARCH }}
+        export KERNEL_DIR=$(pwd)
+        export CLANG_TRIPLE="aarch64-linux-gnu-"
+        export CROSS_COMPILE="aarch64-linux-gnu-"
+        export KBUILD_BUILD_USER="GitHubActions"
+        export KBUILD_BUILD_HOST="github.com"
+        # Export compiler/linker for make command
+        export CC=clang
+        export LD=ld.lld
+        export AR=llvm-ar
+        export NM=llvm-nm
+        export OBJCOPY=llvm-objcopy
+        export OBJDUMP=llvm-objdump
+        export STRIP=llvm-strip
+        export READELF=llvm-readelf
+        export LLVM=1
+        export LLVM_IAS=1
+        # NO HOSTLOADLIBES or HOSTLDFLAGS EXPORT NEEDED HERE
+
+        # Generate kernel config
+        echo "Generating kernel config using ${{ env.KERNEL_DEFCONFIG }}..."
+        make O=out \
+             ARCH=${ARCH} \
+             ${{ env.KERNEL_DEFCONFIG }}
+
+        echo "Disabling CONFIG_CC_STACKPROTECTOR and CONFIG_CC_STACKPROTECTOR_STRONG..."
+        scripts/config --file out/.config --disable CONFIG_CC_STACKPROTECTOR
+        scripts/config --file out/.config --disable CONFIG_CC_STACKPROTECTOR_STRONG
+
+        # Build the kernel - variables inherited, Makefile has the fix
+        echo "Building kernel (using $(nproc) threads - Verbose)..."
+        make -j$(nproc) O=out \
+             Image.gz \
+             KCFLAGS="-Wno-error=misleading-indentation" \
+             KCFLAGS+=" -Wno-error=array-compare" \
+             KCFLAGS+=" -Wno-address-of-packed-member" \
+             KCFLAGS+=" -Wno-error=address" \
+             KCFLAGS+=" -Wno-error=stringop-overread" \
+             KCFLAGS+=" -Wno-error=format" \
+             KCFLAGS+=" -Wno-error=enum-int-mismatch" \
+             KCFLAGS+=" -Wno-error=format-extra-args" \
+             KCFLAGS+=" -Wno-error=memset-elt-size" \
+             KCFLAGS+=" -Wno-error=sizeof-pointer-memaccess" \
+             KCFLAGS+=" -Wno-error=strict-prototypes" \
+             KCFLAGS+=" -Wno-error=unused-variable" \
+             KCFLAGS+=" -Wno-error=uninitialized" \
+             KCFLAGS+=" -Wno-error=pointer-to-int-cast"
+        # Check if the build was successful
+        KERNEL_IMAGE_PATH="out/arch/${ARCH}/boot/Image.gz"
+        if [ ! -f "${KERNEL_IMAGE_PATH}" ]; then
+          echo "❌ Kernel build failed! Output file '${KERNEL_IMAGE_PATH}' not found."
+          exit 1
+        fi
+        echo "✅ Kernel build successful!"
+
+    - name: 📦 Prepare Artifact
+      run: |
+        mkdir -p $GITHUB_WORKSPACE/artifact
+        cp kernel_source/out/arch/${{ env.ARCH }}/boot/Image.gz $GITHUB_WORKSPACE/artifact/
+
+    - name: 📤 Upload Kernel Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: Image.gz-${{ github.run_id }}
+        path: ${{ github.workspace }}/artifact/Image.gz
+        if-no-files-found: error

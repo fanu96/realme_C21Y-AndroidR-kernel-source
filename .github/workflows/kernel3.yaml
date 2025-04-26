@@ -1,0 +1,237 @@
+# .github/workflows/build_kernel.yml
+
+name: Build Kernel (Gzip) & DTBs & vmlinux for Realme C21Y (Stock Config - Full LLVM Toolchain Only - No Strip)
+
+on:
+  workflow_dispatch: # Allows manual triggering
+
+env:
+  CUSTOM_CONFIG_FILE: stock_kernel.config # Your config file in the repo root or kernel_source dir
+  ARCH: arm64
+  DTB_SUBPATH: sprd # Subdirectory under arch/arm64/boot/dts/ where DTBs are expected (Verify this path!)
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    # Step 1: Checkout Kernel Source
+    - name: 📜 Checkout kernel source
+      uses: actions/checkout@v4
+      with:
+        path: kernel_source # Checks out your source code into this subdirectory
+
+    # Step 2: Install Dependencies
+    - name: 🔧 Install Dependencies
+      run: |
+        echo "Installing build dependencies..."
+        sudo apt-get update -qq
+        sudo apt-get install -y --no-install-recommends \
+          bc bison build-essential ca-certificates cpio crossbuild-essential-arm64 \
+          flex git kmod libelf-dev libncurses5-dev libssl-dev \
+          lsb-release make python3 rsync wget zip unzip gzip \
+          libyaml-dev \
+          lz4 # Keep lz4 installed just in case, gzip is usually present
+        echo "Dependencies installed."
+
+    # Step 3: Download and Verify Clang Toolchain
+    - name: 📥 Download & Verify Clang Toolchain (Android 6573524 / Clang 11.0.2)
+      run: |
+        echo "Downloading Android Clang 6573524..."
+        git clone --depth=1 https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-6573524 clang --quiet
+        CLANG_BIN_DIR="$GITHUB_WORKSPACE/clang/bin"
+        CLANG_EXPECTED_VERSION="11.0.2"
+
+        echo "Verifying downloaded toolchain contents..."
+        if [ ! -x "$CLANG_BIN_DIR/clang" ] || [ ! -x "$CLANG_BIN_DIR/ld.lld" ]; then
+          echo "❌ Critical toolchain components (clang or ld.lld) not found or not executable in $CLANG_BIN_DIR!"
+          ls -l "$CLANG_BIN_DIR"
+          exit 1
+        fi
+        echo "Toolchain executables found."
+
+        echo "Adding downloaded Clang/LLVM binutils to PATH for subsequent steps..."
+        echo "$CLANG_BIN_DIR" >> $GITHUB_PATH
+
+        echo "Prepending downloaded Clang/LLVM binutils to PATH for current step..."
+        export PATH="$CLANG_BIN_DIR:$PATH"
+
+        echo "--- Verifying effective PATH and tool versions IN THIS STEP ---"
+        CLANG_PATH=$(which clang)
+        echo "Resolved clang path: $CLANG_PATH"
+        if [[ "$CLANG_PATH" != "$CLANG_BIN_DIR/clang" ]]; then echo "❌ ERROR: 'which clang' resolved incorrectly!"; exit 1; fi
+        CLANG_VERSION=$(clang --version | head -n 1)
+        echo "Resolved clang version: $CLANG_VERSION"
+        if [[ ! "$CLANG_VERSION" =~ $CLANG_EXPECTED_VERSION ]]; then echo "⚠️ WARNING: Resolved clang version doesn't match expected."; fi
+
+        LLD_PATH=$(which ld.lld)
+        echo "Resolved ld.lld path: $LLD_PATH"
+        if [[ "$LLD_PATH" != "$CLANG_BIN_DIR/ld.lld" ]]; then echo "❌ ERROR: 'which ld.lld' resolved incorrectly!"; exit 1; fi
+        LLD_VERSION=$(ld.lld --version | head -n 1)
+        echo "Resolved ld.lld version: $LLD_VERSION"
+         if [[ ! "$LLD_VERSION" =~ $CLANG_EXPECTED_VERSION ]]; then echo "⚠️ WARNING: Resolved ld.lld version doesn't match expected."; fi
+        echo "--- Verification in Step 3 Complete ---"
+        echo "Clang/LLVM toolchain ready."
+
+
+    # Step 4: Build Kernel (Image.gz) and DTBs using Full LLVM Toolchain for Target and Host
+    - name: 🚀 Build Kernel (Image.gz) and DTBs (Full LLVM Toolchain for Target & Host)
+      working-directory: kernel_source # Run commands inside the checked-out source directory
+      run: |
+        echo "Setting up build environment (Full LLVM Toolchain for Target and Host)..."
+        # Environment variables
+        export ARCH=${{ env.ARCH }}
+        export KERNEL_DIR=$(pwd)
+        export CROSS_COMPILE="aarch64-linux-gnu-" # Kept for some scripts/path discovery
+        export CLANG_TRIPLE="aarch64-linux-gnu-"
+        export KBUILD_BUILD_USER="GitHubActions"
+        export KBUILD_BUILD_HOST="github.com"
+
+        # --- Explicitly use LLVM tools for TARGET ---
+        export CC=clang
+        export LD=ld.lld
+        export AR=llvm-ar
+        export NM=llvm-nm
+        export OBJCOPY=llvm-objcopy
+        export OBJDUMP=llvm-objdump
+        export STRIP=llvm-strip
+        export READELF=llvm-readelf
+        export LLVM=1
+        export LLVM_IAS=1
+
+        # --- Explicitly use LLVM tools for HOST programs compiled by Kbuild ---
+        export HOSTCC=clang
+        export HOSTLD=ld.lld
+        # --- End Host Tools ---
+
+        echo "Preparing kernel configuration..."
+        mkdir -p out
+
+        # Locate and Copy Config File
+        CONFIG_SRC_PATH="${{ env.CUSTOM_CONFIG_FILE }}"
+        if [ ! -f "${CONFIG_SRC_PATH}" ]; then
+            CONFIG_SRC_PATH="$GITHUB_WORKSPACE/${{ env.CUSTOM_CONFIG_FILE }}"
+             if [ ! -f "${CONFIG_SRC_PATH}" ]; then
+                 echo "❌ Custom config file '${{ env.CUSTOM_CONFIG_FILE }}' not found in '$(pwd)' or in workspace root '$GITHUB_WORKSPACE'!"
+                 echo "   Ensure '${{ env.CUSTOM_CONFIG_FILE }}' exists in your repository root."
+                 exit 1
+             fi
+        fi
+        echo "Found config file at: ${CONFIG_SRC_PATH}"
+        cp "${CONFIG_SRC_PATH}" out/.config
+        echo "Copied custom config to out/.config"
+
+        # Config modifications
+        scripts/config --file out/.config --disable CONFIG_CC_STACKPROTECTOR || true
+        scripts/config --file out/.config --disable CONFIG_CC_STACKPROTECTOR_STRONG || true
+        scripts/config --file out/.config --disable WERROR || true
+        scripts/config --file out/.config --disable KALLSYMS || true
+        scripts/config --file out/.config --disable KALLSYMS_ALL || true
+
+        # Pre-Make Environment Debugging
+        echo "--------------------------------------------------"
+        echo "DEBUG: Verifying environment variables before make"
+        echo "PATH: $PATH"
+        echo "CC: $CC -> $(which $CC || echo 'Not Found')"
+        echo "LD: $LD -> $(which $LD || echo 'Not Found')"
+        echo "HOSTCC: $HOSTCC -> $(which $HOSTCC || echo 'Not Found')"
+        echo "HOSTLD: $HOSTLD -> $(which $HOSTLD || echo 'Not Found')"
+        echo "--- Using Compiler Version ---"
+        $CC --version || echo "Failed to get CC version"
+        echo "--- Using Linker Version ---"
+        $LD --version || echo "Failed to get LD version"
+        echo "--- Using Host Compiler Version ---"
+        $HOSTCC --version || echo "Failed to get HOSTCC version"
+        echo "--- Using Host Linker Version ---"
+        $HOSTLD --version || echo "Failed to get HOSTLD version"
+        echo "--------------------------------------------------"
+
+        # Build the kernel image (Gzip compressed), DTBs, and vmlinux implicitly - VERBOSE
+        echo "Starting kernel build (Image.gz + dtbs) using $(nproc) threads (VERBOSE)..."
+        make -j$(nproc) O=out \
+             V=1 \
+             Image.gz \
+             dtbs \
+             KCFLAGS="-Wno-error=misleading-indentation -Wno-error=array-compare -Wno-error=address-of-packed-member -Wno-error=address -Wno-error=stringop-overread -Wno-error=format -Wno-error=enum-int-mismatch -Wno-error=format-extra-args -Wno-error=memset-elt-size -Wno-error=sizeof-pointer-memaccess -Wno-error=strict-prototypes -Wno-error=unused-variable -Wno-error=uninitialized -Wno-error=pointer-to-int-cast"
+
+        # --- Build Verification ---
+        echo "Verifying build artifacts..."
+        VMLINUX_PATH="out/vmlinux"
+        KERNEL_IMAGE_GZ_PATH="out/arch/${ARCH}/boot/Image.gz"
+        DTB_DIR_PATH="out/arch/${ARCH}/boot/dts/${{ env.DTB_SUBPATH }}"
+        BUILD_SUCCESS=true
+
+        # Check vmlinux
+        if [ ! -f "${VMLINUX_PATH}" ]; then
+          echo "❌ vmlinux build failed! Output file '${VMLINUX_PATH}' not found."
+          BUILD_SUCCESS=false
+        else
+          echo "✅ vmlinux found: ${VMLINUX_PATH}"
+        fi
+        # Check Image.gz
+        if [ ! -f "${KERNEL_IMAGE_GZ_PATH}" ]; then
+          echo "❌ Kernel Image.gz build failed! Output file '${KERNEL_IMAGE_GZ_PATH}' not found."
+          BUILD_SUCCESS=false
+        else
+          echo "✅ Kernel Image.gz found: ${KERNEL_IMAGE_GZ_PATH}"
+        fi
+        # Check DTBs
+        if ! ls ${DTB_DIR_PATH}/*.dtb > /dev/null 2>&1; then
+          echo "❌ DTB build failed or DTBs not found in expected directory: '${DTB_DIR_PATH}/'"
+          BUILD_SUCCESS=false
+        else
+           echo "✅ DTBs found in: ${DTB_DIR_PATH}/"
+           ls -l ${DTB_DIR_PATH}/
+        fi
+
+        if [ "$BUILD_SUCCESS" = false ]; then
+            exit 1
+        fi
+        echo "✅ Kernel, vmlinux and DTB build successful!"
+        # --- End Build Verification ---
+
+    # Step 5: Prepare Artifacts (Including vmlinux)
+    - name: 📦 Prepare Artifacts (Inc. vmlinux - No Strip)
+      run: |
+        ARTIFACT_DIR="$GITHUB_WORKSPACE/artifact"
+        mkdir -p ${ARTIFACT_DIR}
+        echo "Preparing artifacts in ${ARTIFACT_DIR}..."
+
+        # Copy Kernel Image (Gzip)
+        KERNEL_SRC_GZ_PATH="kernel_source/out/arch/${{ env.ARCH }}/boot/Image.gz"
+        if [ -f "${KERNEL_SRC_GZ_PATH}" ]; then
+            cp "${KERNEL_SRC_GZ_PATH}" ${ARTIFACT_DIR}/
+            echo "Copied Image.gz"
+        else
+            echo "⚠️ Kernel Image.gz not found at ${KERNEL_SRC_GZ_PATH}."
+        fi
+
+        # Copy vmlinux
+        VMLINUX_SRC_PATH="kernel_source/out/vmlinux"
+        if [ -f "${VMLINUX_SRC_PATH}" ]; then
+            cp "${VMLINUX_SRC_PATH}" ${ARTIFACT_DIR}/
+            echo "Copied vmlinux"
+        else
+            echo "⚠️ vmlinux not found at ${VMLINUX_SRC_PATH}."
+        fi
+
+        # Copy DTBs
+        DTB_SRC_DIR="kernel_source/out/arch/${{ env.ARCH }}/boot/dts/${{ env.DTB_SUBPATH }}"
+        if [ -d "${DTB_SRC_DIR}" ] && ls ${DTB_SRC_DIR}/*.dtb > /dev/null 2>&1; then
+            echo "Copying DTBs from ${DTB_SRC_DIR}..."
+            cp ${DTB_SRC_DIR}/*.dtb ${ARTIFACT_DIR}/
+            echo "Copied DTB files."
+        else
+            echo "⚠️ No .dtb files found in ${DTB_SRC_DIR} to copy."
+        fi
+
+        echo "Artifact preparation complete (Inc. vmlinux - No stripping applied). Contents of ${ARTIFACT_DIR}:"
+        ls -lh ${ARTIFACT_DIR}
+
+    # Step 6: Upload Kernel Artifacts
+    - name: 📤 Upload Kernel Artifacts (Inc. vmlinux - No Strip)
+      uses: actions/upload-artifact@v4
+      with:
+        name: Kernel-vmlinux-DTB-Gzip-FullLLVM-NoStrip-${{ github.run_id }} # Updated artifact name
+        path: ${{ github.workspace }}/artifact/
+        if-no-files-found: error

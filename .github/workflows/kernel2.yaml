@@ -1,1 +1,175 @@
+# .github/workflows/build_kernel.yml
 
+name: Build Kernel & DTBs for Realme C21Y (RMX3261/RMX3263) using Stock Config
+
+on:
+  workflow_dispatch: # Allows manual triggering
+
+env:
+  CUSTOM_CONFIG_FILE: stock_kernel.config # Your config file in the repo root
+  ARCH: arm64
+  DTB_SUBPATH: sprd # Subdirectory under arch/arm64/boot/dts/ where DTBs are expected (CHANGE IF NEEDED)
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    # Step 1: Checkout Kernel Source
+    - name: 📜 Checkout kernel source
+      uses: actions/checkout@v4
+      with:
+        path: kernel_source # Checks out your source code
+
+    # Step 2: Install Dependencies
+    - name: 🔧 Install Dependencies
+      run: |
+        echo "Installing build dependencies..."
+        sudo apt-get update -qq
+        sudo apt-get install -y --no-install-recommends \
+          bc bison build-essential ca-certificates cpio crossbuild-essential-arm64 \
+          flex git kmod libelf-dev libncurses5-dev libssl-dev \
+          lsb-release make python3 rsync wget zip unzip gzip \
+          libyaml-dev
+        echo "Dependencies installed."
+
+    # Step 3: Download Clang Toolchain
+    - name: 📥 Download Clang Toolchain (crDroid r353983c / Clang 9.0.3)
+      run: |
+        echo "Downloading crDroid Clang r353983c..."
+        git clone --depth=1 https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-6573524 clang
+        echo "Adding Clang to PATH..."
+        echo "$GITHUB_WORKSPACE/clang/bin" >> $GITHUB_PATH
+        clang --version
+        echo "Clang toolchain ready."
+
+    # Step 4: Build Kernel and DTBs
+    - name: 🚀 Build Kernel and DTBs
+      working-directory: kernel_source
+      run: |
+        echo "Setting up build environment..."
+        # Set and export build environment variables
+        export ARCH=${{ env.ARCH }}
+        export KERNEL_DIR=$(pwd)
+        export CLANG_TRIPLE="aarch64-linux-gnu-"
+        export CROSS_COMPILE="aarch64-linux-gnu-"
+        export KBUILD_BUILD_USER="GitHubActions"
+        export KBUILD_BUILD_HOST="github.com"
+        # Export compiler/linker for make command
+        export CC=clang
+        export LD=ld.lld
+        export AR=llvm-ar
+        export NM=llvm-nm
+        export OBJCOPY=llvm-objcopy
+        export OBJDUMP=llvm-objdump
+        export STRIP=llvm-strip # Keep this export for potential internal make use
+        export READELF=llvm-readelf
+        export LLVM=1
+        export LLVM_IAS=1
+
+        echo "Preparing kernel configuration using ${{ env.CUSTOM_CONFIG_FILE }}..."
+        mkdir -p out # Ensure the output directory exists
+        if [ ! -f "${{ env.CUSTOM_CONFIG_FILE }}" ]; then
+          echo "❌ Custom config file '${{ env.CUSTOM_CONFIG_FILE }}' not found in repository root!"
+          exit 1
+        fi
+        cp "${{ env.CUSTOM_CONFIG_FILE }}" out/.config
+        echo "Copied custom config to out/.config"
+
+        # Optional: Apply modifications to the copied config
+        echo "Disabling CONFIG_CC_STACKPROTECTOR and CONFIG_CC_STACKPROTECTOR_STRONG (if enabled)..."
+        scripts/config --file out/.config --disable CONFIG_CC_STACKPROTECTOR || true # Continue if already disabled
+        scripts/config --file out/.config --disable CONFIG_CC_STACKPROTECTOR_STRONG || true # Continue if already disabled
+
+        # Optional but Recommended: Disable CONFIG_WERROR if needed
+        echo "Checking/Disabling CONFIG_WERROR..."
+        scripts/config --file out/.config --disable WERROR || echo "CONFIG_WERROR was not enabled or already disabled."
+
+        # Optional: Disable Kallsyms to remove runtime symbols for smaller size (harder debugging)
+        echo "Checking/Disabling CONFIG_KALLSYMS for smaller size..."
+        scripts/config --file out/.config --disable KALLSYMS || echo "CONFIG_KALLSYMS was not enabled or already disabled."
+        scripts/config --file out/.config --disable KALLSYMS_ALL || echo "CONFIG_KALLSYMS_ALL was not enabled or already disabled."
+
+        # Build the kernel image and DTBs
+        echo "Starting kernel build (Image.gz + dtbs) using $(nproc) threads..."
+        make -j$(nproc) O=out \
+             Image.gz \
+             dtbs \
+             KCFLAGS="-Wno-error=misleading-indentation" \
+             KCFLAGS+=" -Wno-error=array-compare" \
+             KCFLAGS+=" -Wno-error=address-of-packed-member" \
+             KCFLAGS+=" -Wno-error=address" \
+             KCFLAGS+=" -Wno-error=stringop-overread" \
+             KCFLAGS+=" -Wno-error=format" \
+             KCFLAGS+=" -Wno-error=enum-int-mismatch" \
+             KCFLAGS+=" -Wno-error=format-extra-args" \
+             KCFLAGS+=" -Wno-error=memset-elt-size" \
+             KCFLAGS+=" -Wno-error=sizeof-pointer-memaccess" \
+             KCFLAGS+=" -Wno-error=strict-prototypes" \
+             KCFLAGS+=" -Wno-error=unused-variable" \
+             KCFLAGS+=" -Wno-error=uninitialized" \
+             KCFLAGS+=" -Wno-error=pointer-to-int-cast"
+
+        # --- Build Verification ---
+        echo "Verifying build artifacts..."
+        KERNEL_IMAGE_GZ_PATH="out/arch/${ARCH}/boot/Image.gz"
+        DTB_DIR_PATH="out/arch/${ARCH}/boot/dts/${{ env.DTB_SUBPATH }}"
+        BUILD_SUCCESS=true
+
+        if [ ! -f "${KERNEL_IMAGE_GZ_PATH}" ]; then
+          echo "❌ Kernel Image build failed! Output file '${KERNEL_IMAGE_GZ_PATH}' not found."
+          BUILD_SUCCESS=false
+        else
+          echo "✅ Kernel Image found: ${KERNEL_IMAGE_GZ_PATH}"
+        fi
+
+        if ! ls ${DTB_DIR_PATH}/*.dtb > /dev/null 2>&1; then
+          echo "❌ DTB build failed or DTBs not found in expected directory!"
+          echo "   Expected DTBs in: '${DTB_DIR_PATH}/'"
+          BUILD_SUCCESS=false
+        else
+           echo "✅ DTBs found in: ${DTB_DIR_PATH}/"
+        fi
+
+        if [ "$BUILD_SUCCESS" = false ]; then
+            exit 1
+        fi
+        echo "✅ Kernel and DTB build successful!"
+        # --- End Build Verification ---
+
+    # Step 5: Prepare Artifacts (Stripping step removed)
+    - name: 📦 Prepare Artifacts
+      run: |
+        ARTIFACT_DIR="$GITHUB_WORKSPACE/artifact"
+        mkdir -p ${ARTIFACT_DIR}
+        echo "Preparing artifacts in ${ARTIFACT_DIR}..."
+
+        # Copy Kernel Image
+        KERNEL_SRC_PATH="kernel_source/out/arch/${{ env.ARCH }}/boot/Image.gz"
+        if [ -f "${KERNEL_SRC_PATH}" ]; then
+            cp "${KERNEL_SRC_PATH}" ${ARTIFACT_DIR}/
+            echo "Copied Image.gz"
+        else
+            echo "⚠️ Kernel Image.gz not found at ${KERNEL_SRC_PATH}."
+        fi
+
+        # Copy All DTB files from the specified subdirectory
+        DTB_SRC_DIR="kernel_source/out/arch/${{ env.ARCH }}/boot/dts/${{ env.DTB_SUBPATH }}"
+        if [ -d "${DTB_SRC_DIR}" ] && ls ${DTB_SRC_DIR}/*.dtb > /dev/null 2>&1; then
+            echo "Copying DTBs from ${DTB_SRC_DIR}..."
+            cp ${DTB_SRC_DIR}/*.dtb ${ARTIFACT_DIR}/
+            echo "Copied DTB files."
+        else
+            echo "⚠️ No .dtb files found in ${DTB_SRC_DIR} to copy."
+        fi
+
+        echo "Artifact preparation complete. Contents of ${ARTIFACT_DIR}:"
+        ls -l ${ARTIFACT_DIR}
+
+    # Step 6: Upload Kernel Artifacts
+    - name: 📤 Upload Kernel Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: Kernel-DTB-${{ github.run_id }} # Removed 'Stripped' from name
+        path: ${{ github.workspace }}/artifact/
+        if-no-files-found: error
