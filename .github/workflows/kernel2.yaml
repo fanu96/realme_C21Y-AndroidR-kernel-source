@@ -1,10 +1,9 @@
-name: Build Kernel for Realme C21Y (RMX3261/RMX3263) with Custom Config
+name: Build Kernel for Realme C21Y (RMX3261/RMX3263) with Custom Config + olddefconfig
 
 on:
   workflow_dispatch: # Allows manual triggering
 
 env:
-  # KERNEL_DEFCONFIG removed - using custom file
   ARCH: arm64
 
 jobs:
@@ -67,45 +66,43 @@ jobs:
         export HOST_LDFLAGS="$YAML_LIBS"
         echo "HOST_LDFLAGS=$HOST_LDFLAGS"
 
-        # --- MODIFIED SECTION: Use Custom Config ---
+        # --- Use Custom Config ---
         echo "Preparing output directory..."
         mkdir -p out
 
-        echo "--> Checking for custom config file (stock_kernel.config) in current directory ($(pwd))..."
-        # Check if the custom config file exists in the root of the checked-out source (current dir)
+        echo "--> Checking for custom config file (stock_kernel.config)..."
         if [ ! -f "stock_kernel.config" ]; then
-          echo "---------------------------------------------------------------------"
           echo "❌ FATAL ERROR: Custom config file 'stock_kernel.config' not found!"
-          echo "   Please ensure the file exists in the ROOT of your kernel source"
-          echo "   repository and is named exactly 'stock_kernel.config'."
-          echo "   Current directory contents:"
-          ls -la
-          echo "---------------------------------------------------------------------"
           exit 1
         fi
         ls -l stock_kernel.config
 
-        echo "--> Attempting to copy 'stock_kernel.config' to 'out/.config'..."
-        # Copy the custom config from source root to out/.config
+        echo "--> Copying 'stock_kernel.config' to 'out/.config'..."
         cp stock_kernel.config out/.config
 
-        echo "--> Verifying presence and content of 'out/.config'..."
+        echo "--> Verifying presence of 'out/.config'..."
         ls -l out/.config
         if [ ! -f "out/.config" ]; then
-           echo "---------------------------------------------------------------------"
            echo "❌ FATAL ERROR: Failed to copy 'stock_kernel.config' to 'out/.config'!"
-           echo "   Check permissions or disk space."
-           echo "---------------------------------------------------------------------"
            exit 1
         fi
-        echo "   'out/.config' exists. First 5 lines:"
-        head -n 5 out/.config
-        echo "✅ Custom config 'out/.config' copied and verified."
-        # --- END MODIFIED SECTION ---
+        echo "✅ Custom config 'out/.config' copied."
 
-        # Build the kernel with Clang using the copied custom config
-        echo "Building kernel using provided 'stock_kernel.config' (now as out/.config) (using $(nproc) threads)..."
-        # This make command will use the out/.config file we just copied
+        # --- Update Config with Defaults ---
+        echo "--> Updating config with defaults for new symbols using 'make olddefconfig'..."
+        # Use make olddefconfig to non-interactively set defaults for missing options
+        make O=out \
+             ARCH=${ARCH} \
+             CROSS_COMPILE=${CROSS_COMPILE} \
+             CC="${CC}" CXX="${CXX}" \
+             HOSTCC="${HOSTCC}" HOSTCXX="${HOSTCXX}" \
+             HOSTLDFLAGS="${HOST_LDFLAGS}" \
+             olddefconfig
+        echo "✅ Config updated with defaults (if any were missing)."
+        # --- End Update Config Section ---
+
+        # Build the kernel with Clang using the updated .config
+        echo "Building kernel using updated 'out/.config' (using $(nproc) threads)..."
         make -j$(nproc) O=out V=1\
              CC="${CC}" CXX="${CXX}" \
              HOSTCC="${HOSTCC}" HOSTCXX="${HOSTCXX}" \
