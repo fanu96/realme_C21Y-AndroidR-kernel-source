@@ -15,7 +15,7 @@ jobs:
     - name: 📜 Checkout kernel source
       uses: actions/checkout@v4
       with:
-        path: kernel_source
+        path: kernel_source # Checks out your modified source
 
     - name: 🔧 Install Dependencies
       run: |
@@ -23,78 +23,76 @@ jobs:
         sudo apt-get install -y --no-install-recommends \
           bc bison build-essential ca-certificates cpio crossbuild-essential-arm64 \
           flex git kmod libelf-dev libncurses5-dev libssl-dev \
-          make python3 rsync wget zip unzip \
-          libyaml-dev pkg-config xz-utils
+          lsb-release make python3 rsync wget zip unzip \
+          libyaml-dev pkg-config
 
-    - name: 📥 Download Clang Toolchain
+    - name: 📥 Download Clang Toolchain (crDroid r353983c / Clang 11.0.2)
       run: |
-        echo "Downloading Android prebuilt Clang 11.0.2 (6573524 based on r383902b)..."
+        echo "Downloading crDroid Clang r353983c..."
         git clone --depth=1 https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-6573524 clang
         echo "$GITHUB_WORKSPACE/clang/bin" >> $GITHUB_PATH
-        echo "Host clang from: $(which clang)"
-        clang --version
+        $GITHUB_WORKSPACE/clang/bin/clang --version
 
-    - name: 🚀 Build Kernel & DTBs
+    - name: 🚀 Build Kernel
       working-directory: kernel_source
       run: |
-        # dtc YAML linking flags
-        export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig
-        export HOSTLDFLAGS=$(pkg-config --libs yaml-0.1 2>/dev/null || echo "-lyaml")
-        echo "HOSTLDFLAGS=$HOSTLDFLAGS"
-
-        # core env
+        # Set and export build environment variables
         export ARCH=${{ env.ARCH }}
+        export KERNEL_DIR=$(pwd)
+        export CLANG_TRIPLE="aarch64-linux-gnu-"
+        export CROSS_COMPILE="aarch64-linux-gnu-"
         export KBUILD_BUILD_USER="GitHubActions"
         export KBUILD_BUILD_HOST="github.com"
 
-        # use clang as cross-compiler via --target
-        export CC="clang --target=aarch64-linux-gnu"
-        export CXX="clang++ --target=aarch64-linux-gnu"
-        export LD=ld.lld
-        export AR=llvm-ar
-        export NM=llvm-nm
-        export OBJCOPY=llvm-objcopy
-        export OBJDUMP=llvm-objdump
-        export STRIP=llvm-strip
-        export READELF=llvm-readelf
+        # Export compilers and linkers for target
+        export CC=$GITHUB_WORKSPACE/clang/bin/clang
+        export CXX=$GITHUB_WORKSPACE/clang/bin/clang++
+        export LD=$GITHUB_WORKSPACE/clang/bin/ld.lld
+        export AR=$GITHUB_WORKSPACE/clang/bin/llvm-ar
+        export NM=$GITHUB_WORKSPACE/clang/bin/llvm-nm
+        export OBJCOPY=$GITHUB_WORKSPACE/clang/bin/llvm-objcopy
+        export OBJDUMP=$GITHUB_WORKSPACE/clang/bin/llvm-objdump
+        export STRIP=$GITHUB_WORKSPACE/clang/bin/llvm-strip
+        export READELF=$GITHUB_WORKSPACE/clang/bin/llvm-readelf
         export LLVM=1
         export LLVM_IAS=1
 
-        # host compiler
-        export HOSTCC=clang
-        export HOSTCXX=clang++
+        # Export compilers for host
+        export HOSTCC=$GITHUB_WORKSPACE/clang/bin/clang
+        export HOSTCXX=$GITHUB_WORKSPACE/clang/bin/clang++
 
-        # generate config
-        echo "Generating kernel config ${KERNEL_DEFCONFIG}"
+        # Handle YAML linking for DTC
+        export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}
+        YAML_LIBS=$(pkg-config --libs yaml-0.1 2>/dev/null || echo "-lyaml -L/usr/lib/x86_64-linux-gnu")
+        export HOST_LDFLAGS="$YAML_LIBS"
+        echo "HOST_LDFLAGS=$HOST_LDFLAGS"
+
+        # Generate kernel config
+        echo "Generating kernel config using ${{ env.KERNEL_DEFCONFIG }}..."
         make O=out ARCH=${ARCH} ${{ env.KERNEL_DEFCONFIG }}
 
-        # disable stack protector
-        scripts/config --file out/.config --disable CONFIG_CC_STACKPROTECTOR
-        scripts/config --file out/.config --disable CONFIG_CC_STACKPROTECTOR_STRONG
-
-        # build
-        echo "Building Image.gz + DTBs with $(nproc) threads..."
+        # Build the kernel with Clang, suppressing warnings as errors
+        echo "Building kernel (using $(nproc) threads)..."
         make -j$(nproc) O=out \
-             CC="$CC" CXX="$CXX" \
-             HOSTCC=$HOSTCC HOSTCXX=$HOSTCXX \
-             HOSTLDFLAGS="$HOSTLDFLAGS" \
+             CC="${CC}" CXX="${CXX}" \
+             HOSTCC="${HOSTCC}" HOSTCXX="${HOSTCXX}" \
+             HOSTLDFLAGS="${HOST_LDFLAGS}" \
              Image.gz dtbs
-
-        # verify
-        if [ ! -f out/arch/${ARCH}/boot/Image.gz ]; then
-          echo "❌ Kernel build failed: Image.gz not found"
+        # Check if the build was successful
+        KERNEL_IMAGE_PATH="out/arch/${ARCH}/boot/Image.gz"
+        if [ ! -f "${KERNEL_IMAGE_PATH}" ]; then
+          echo "❌ Kernel build failed! Output file '${KERNEL_IMAGE_PATH}' not found."
           exit 1
         fi
-        echo "✅ Kernel build successful"
+        echo "✅ Kernel build successful!"
 
     - name: 📦 Prepare Artifact
       run: |
         mkdir -p $GITHUB_WORKSPACE/artifact
-        cp out/arch/${{ env.ARCH }}/boot/Image.gz $GITHUB_WORKSPACE/artifact/
-        find out/arch/${{ env.ARCH }}/boot/dts/ -name '*.dtb' -exec cp {} $GITHUB_WORKSPACE/artifact/ \;
-        ls -l $GITHUB_WORKSPACE/artifact
+        cp kernel_source/out/arch/${{ env.ARCH }}/boot/Image.gz $GITHUB_WORKSPACE/artifact/
+        find kernel_source/out/arch/${{ env.ARCH }}/boot/dts/ -name '*.dtb' -exec cp {} $GITHUB_WORKSPACE/artifact/ \;
 
-    - name: 📤 Upload Artifacts
+    - name: 📤 Upload Kernel Artifact
       uses: actions/upload-artifact@v4
       with:
         name: kernel-${{ github.run_id }}
