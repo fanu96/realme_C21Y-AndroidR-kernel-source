@@ -31,11 +31,18 @@ jobs:
           echo "Downloading Android (6573524 based on r383902b) Clang 11.0.2 toolchain..."
           git clone --depth=1 https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-6573524 clang
           echo "$GITHUB_WORKSPACE/clang/bin" >> $GITHUB_PATH
+          echo "Added clang to PATH via GITHUB_PATH"
+          echo "Clang binary list: $(ls $GITHUB_WORKSPACE/clang/bin | head -n 5)"
           clang --version
 
       - name: 🚀 Build Kernel & DTBs
         working-directory: kernel_source
         run: |
+          # Ensure downloaded clang is first in PATH
+          export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
+          echo "Using clang from: $(which clang)"
+          clang --version
+
           # Core environment
           export ARCH=${{ env.ARCH }}
           export KBUILD_BUILD_USER="GitHubActions"
@@ -44,6 +51,8 @@ jobs:
           # Full LLVM toolchain
           export CC=clang
           export HOSTCC=clang
+          export CXX=clang++
+          export HOSTCXX=clang++
           export LD=ld.lld
           export AR=llvm-ar
           export NM=llvm-nm
