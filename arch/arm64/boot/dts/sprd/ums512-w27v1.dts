@@ -22,6 +22,7 @@
 #include "sprd-sound-fe-be.dtsi"
 #include "extra_sound_card_component.dtsi"
 #include "ums512-mach.dtsi"
+#include "sharkl5Pro.dtsi"
 
 / {
 	model = "Unisoc UMS512 1H10 board";
