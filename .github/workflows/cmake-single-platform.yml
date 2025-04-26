@@ -24,16 +24,14 @@ jobs:
             bc bison build-essential ca-certificates cpio crossbuild-essential-arm64 \
             flex git kmod libelf-dev libncurses5-dev libssl-dev \
             make python3 rsync wget zip unzip \
-            xz-utils libyaml-dev
+            xz-utils libyaml-dev pkg-config
 
       - name: 📥 Download Android Clang Toolchain
         run: |
           echo "Downloading Android (6573524 based on r383902b) Clang 11.0.2 toolchain..."
           git clone --depth=1 https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-6573524 clang
           echo "$GITHUB_WORKSPACE/clang/bin" >> $GITHUB_PATH
-          echo "Added clang to PATH via GITHUB_PATH"
-          echo "Clang binary list: $(ls $GITHUB_WORKSPACE/clang/bin | head -n 5)"
-          clang --version
+          echo "Clang download complete"
 
       - name: 🚀 Build Kernel & DTBs
         working-directory: kernel_source
@@ -42,6 +40,11 @@ jobs:
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
           echo "Using clang from: $(which clang)"
           clang --version
+
+          # Provide YAML flags for scripts/dtc
+          export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig
+          export YAML_CFLAGS=$(pkg-config --cflags yaml-0.1)
+          export YAML_LIBS=$(pkg-config --libs yaml-0.1)
 
           # Core environment
           export ARCH=${{ env.ARCH }}
