@@ -1,11 +1,31 @@
 # .github/workflows/build_kernel.yaml
-name: Build Kernel for Realme C21Y (RMX3261/RMX3263) with Custom Config + olddefconfig
+# ----------------------------------------------------------------------------
+# Minimal host tool versions required (from Documentation/process/changes.rst):
+#   - GNU C (gcc) >= 3.2      (gcc --version)
+#   - GNU make >= 3.81         (make --version)
+#   - binutils >= 2.20         (ld -v)
+#   - util‑linux >= 2.10o      (fdformat --version)
+#   - kmod >= 13               (depmod -V)
+#   - e2fsprogs >= 1.41.4      (e2fsck -V)
+#   - squashfs-tools >= 4.0    (mksquashfs -version)
+#   - openssl & libcrypto >= 1.0.0 (openssl version)
+# ----------------------------------------------------------------------------
+name: Build Kernel for Realme C21Y (RMX3261/RMX3263) with Custom Config + olddefconfig for Realme C21Y (RMX3261/RMX3263) with Custom Config + olddefconfig
 
 on:
   workflow_dispatch:
 
 env:
   ARCH: arm64
+  CLANG_TRIPLE: aarch64-linux-gnu-
+  CROSS_COMPILE: aarch64-linux-androidkernel-
+  LINUX_GCC_CROSS_COMPILE_PREBUILTS_BIN: prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin
+  FILES: |
+    arch/arm64/boot/Image.gz
+    vmlinux
+    System.map
+  # Strip trace-printk calls for release builds
+  STOP_SHIP_TRACEPRINTK: 1
 
 jobs:
   build:
@@ -29,53 +49,72 @@ jobs:
       - name: 📥 Download Clang Toolchain (crDroid r353983c / Clang 11.0.2)
         run: |
           git clone --depth=1 https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-6573524 clang
-          # Put clang/bin (with clang, clang++, ld.lld, llvm-ar, etc.) first in PATH
+          # Prepend clang/bin (with clang, clang++, ld.lld, llvm-ar, etc.) to PATH
           echo "${{ github.workspace }}/clang/bin" >> $GITHUB_PATH
           clang --version
 
-      - name: 🚀 Build Kernel (no GCC anywhere)
+      - name: 🚀 Build Kernel (LLVM front-end + LLD linker)
         working-directory: kernel_source
         run: |
-          #─── Basic env ─────────────────────────────────────────────────────────
+          set -euo pipefail
+
+          #─── Basic environment ─────────────────────────────────────────────
           export ARCH=${{ env.ARCH }}
-          export CROSS_COMPILE="aarch64-linux-gnu-"
+          export CLANG_TRIPLE=${{ env.CLANG_TRIPLE }}
+          export CROSS_COMPILE=${{ env.CROSS_COMPILE }}
+          export LINUX_GCC_CROSS_COMPILE_PREBUILTS_BIN=${{ env.LINUX_GCC_CROSS_COMPILE_PREBUILTS_BIN }}
           export KBUILD_BUILD_USER="GitHubActions"
           export KBUILD_BUILD_HOST="github.com"
 
-          #─── Force LLVM for *everything* ────────────────────────────────────────
-          export PATH=${{ github.workspace }}/clang/bin:$PATH
+          #─── Force LLVM for everything ─────────────────────────────────────
+          export PATH="${{ github.workspace }}/clang/bin:$PATH"
           export CC=clang
+          export CXX=clang++
           export LD=ld.lld
+          export HOSTCC=clang
+          export HOSTCXX=clang++
+          export HOSTLD=ld.lld
+          export AR=llvm-ar
+          export HOSTAR=llvm-ar
+          export NM=llvm-nm
+          export HOSTNM=llvm-nm
+          export OBJCOPY=llvm-objcopy
+          export OBJDUMP=llvm-objdump
+          export STRIP=llvm-strip
+          export READELF=llvm-readelf
+          export LLVM=1
+          export LLVM_IAS=1
+          # Ensure -fuse-ld=lld for all link steps
+          export LDFLAGS="-fuse-ld=lld"
 
-          #─── YAML libs for dtc ──────────────────────────────────────────────────
-          export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}
-          YAML_LIBS=$(pkg-config --libs yaml-0.1 2>/dev/null || echo "-lyaml -L/usr/lib/x86_64-linux-gnu")
+          #─── YAML libs for dtc ─────────────────────────────────────────────
+          export PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}"
+          YAML_LIBS=$(pkg-config --libs yaml-0.1 || echo "-lyaml -L/usr/lib/x86_64-linux-gnu")
           export HOST_LDFLAGS="$YAML_LIBS"
 
-          #─── Prepare output & config ───────────────────────────────────────────
+          #─── Prepare output & config ───────────────────────────────────────
           mkdir -p out
           cp stock_kernel.config out/.config
 
-          #─── Update config w/ defaults ────────────────────────────────────────
-          # NOTE: STOP_SHIP_TRACEPRINTK is usually not needed for olddefconfig
+          #─── Update config with defaults non-interactively ────────────────
           make O=out \
-               ARCH=${ARCH} \
-               CC=${CC} LD=${LD} \
-               HOSTLDFLAGS="${HOST_LDFLAGS}" \
+               ARCH=$ARCH \
+               CC=$CC CXX=$CXX LD=$LD \
+               HOSTCC=$HOSTCC HOSTCXX=$HOSTCXX HOSTLD=$HOSTLD \
+               LDFLAGS="$LDFLAGS" HOST_LDFLAGS="$HOST_LDFLAGS" \
                olddefconfig
 
-          #─── Build kernel + DTBs ──────────────────────────────────────────────
-          # Added STOP_SHIP_TRACEPRINTK=1 here as per the config snippet
-          make -j$(nproc) O=out \
-               ARCH=${ARCH} \
-               CC=${CC} LD=${LD} \
-               HOSTLDFLAGS="${HOST_LDFLAGS}" \
-               STOP_SHIP_TRACEPRINTK=1 \
+          #─── Build Image + DTBs ───────────────────────────────────────────
+          make -j$(nproc) O=out V=1 \
+               ARCH=$ARCH \
+               CC=$CC CXX=$CXX LD=$LD \
+               LDFLAGS="$LDFLAGS" HOST_LDFLAGS="$HOST_LDFLAGS" \
+               STOP_SHIP_TRACEPRINTK=${{ env.STOP_SHIP_TRACEPRINTK }} \
                Image.gz dtbs
 
-          #─── Verify success ────────────────────────────────────────────────────
-          if [ ! -f out/arch/${ARCH}/boot/Image.gz ]; then
-            echo "❌ Build failed: out/arch/${ARCH}/boot/Image.gz not found."
+          #─── Verify success ───────────────────────────────────────────────
+          if [ ! -f out/arch/$ARCH/boot/Image.gz ]; then
+            echo "❌ Build failed: Missing out/arch/$ARCH/boot/Image.gz"
             exit 1
           fi
           echo "✅ Kernel build successful!"
@@ -84,7 +123,8 @@ jobs:
         run: |
           mkdir -p $GITHUB_WORKSPACE/artifact
           cp kernel_source/out/arch/${{ env.ARCH }}/boot/Image.gz $GITHUB_WORKSPACE/artifact/
-          find kernel_source/out/arch/${{ env.ARCH }}/boot/dts/ -name '*.dtb' -exec cp {} $GITHUB_WORKSPACE/artifact/ \;
+          find kernel_source/out/arch/${{ env.ARCH }}/boot/dts/ -name '*.dtb' -exec cp {} $GITHUB_WORKSPACE/artifact/ \
+            \;
 
       - name: 📤 Upload Kernel Artifact
         uses: actions/upload-artifact@v4
@@ -92,3 +132,4 @@ jobs:
           name: kernel-${{ github.run_id }}
           path: ${{ github.workspace }}/artifact/*
           if-no-files-found: error
+
