@@ -44,22 +44,16 @@ jobs:
           #─── Force LLVM for *everything* ────────────────────────────────────────
           export PATH=${{ github.workspace }}/clang/bin:$PATH
           export CC=clang
-          export CXX=clang++
           export LD=ld.lld
           export HOSTCC=clang
-          export HOSTCXX=clang++
-          export HOSTLD=ld.lld
           export AR=llvm-ar
-          export HOSTAR=llvm-ar
           export NM=llvm-nm
-          export HOSTNM=llvm-nm
           export OBJCOPY=llvm-objcopy
           export OBJDUMP=llvm-objdump
           export STRIP=llvm-strip
           export READELF=llvm-readelf
           export LLVM=1
           export LLVM_IAS=1
-          export LDFLAGS="-fuse-ld=lld"
 
           #─── YAML libs for dtc ──────────────────────────────────────────────────
           export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}
