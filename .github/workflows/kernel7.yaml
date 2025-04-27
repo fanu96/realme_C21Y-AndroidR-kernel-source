@@ -79,7 +79,7 @@ jobs:
                olddefconfig
 
           #─── Build kernel + DTBs ──────────────────────────────────────────────
-          make -j$(nproc) O=out V=1 \
+          make -j$(nproc) O=out \
                ARCH=${ARCH} \
                CC=${CC} CXX=${CXX} LD=${LD} HOSTCC=${HOSTCC} HOSTCXX=${HOSTCXX} HOSTLD=${HOSTLD} \
                AR=${AR} HOSTAR=${HOSTAR} NM=${NM} HOSTNM=${HOSTNM} \
