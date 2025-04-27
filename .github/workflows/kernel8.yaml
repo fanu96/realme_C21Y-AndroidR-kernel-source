@@ -46,6 +46,11 @@ jobs:
           export CC=clang
           export LD=ld.lld
 
+          #─── YAML libs for dtc ──────────────────────────────────────────────────
+          export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}
+          YAML_LIBS=$(pkg-config --libs yaml-0.1 2>/dev/null || echo "-lyaml -L/usr/lib/x86_64-linux-gnu")
+          export HOST_LDFLAGS="$YAML_LIBS"
+
           #─── Prepare output & config ───────────────────────────────────────────
           mkdir -p out
           cp stock_kernel.config out/.config
@@ -59,7 +64,7 @@ jobs:
 
           #─── Build kernel + DTBs ──────────────────────────────────────────────
           # Added STOP_SHIP_TRACEPRINTK=1 here as per the config snippet
-          make -j$(nproc) O=out V=1 \
+          make -j$(nproc) O=out \
                ARCH=${ARCH} \
                CC=${CC} LD=${LD} \
                STOP_SHIP_TRACEPRINTK=1 \
