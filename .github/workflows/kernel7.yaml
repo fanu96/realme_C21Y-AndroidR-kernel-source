@@ -36,7 +36,6 @@ jobs:
         working-directory: kernel_source
         run: |
           export ARCH=arm64
-          export SUBARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export KBUILD_BUILD_USER=GitHubActions
           export KBUILD_BUILD_HOST=github.com
