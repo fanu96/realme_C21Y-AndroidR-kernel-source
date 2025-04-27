@@ -1,3 +1,4 @@
+# .github/workflows/build_kernel.yaml
 name: Build Kernel for Realme C21Y (RMX3261/RMX3263) with Custom Config + olddefconfig
 
 on:
@@ -35,13 +36,28 @@ jobs:
       - name: 🚀 Build Kernel (no GCC anywhere)
         working-directory: kernel_source
         run: |
-          export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          export KBUILD_BUILD_USER=GitHubActions
-          export KBUILD_BUILD_HOST=github.com
+          #─── Basic env ─────────────────────────────────────────────────────────
+          export ARCH=${{ env.ARCH }}
+          export CROSS_COMPILE="aarch64-linux-gnu-"
+          export KBUILD_BUILD_USER="GitHubActions"
+          export KBUILD_BUILD_HOST="github.com"
 
+          #─── Force LLVM for *everything* ────────────────────────────────────────
           export PATH=${{ github.workspace }}/clang/bin:$PATH
           export CC=clang
+          export CXX=clang++
+          export LD=ld.lld
+          export HOSTCC=clang
+          export HOSTCXX=clang++
+          export HOSTLD=ld.lld
+          export AR=llvm-ar
+          export HOSTAR=llvm-ar
+          export NM=llvm-nm
+          export HOSTNM=llvm-nm
+          export OBJCOPY=llvm-objcopy
+          export OBJDUMP=llvm-objdump
+          export STRIP=llvm-strip
+          export READELF=llvm-readelf
           export LLVM=1
           export LLVM_IAS=1
 
@@ -55,6 +71,7 @@ jobs:
           cp stock_kernel.config out/.config
 
           #─── Update config w/ defaults ────────────────────────────────────────
+          # NOTE: STOP_SHIP_TRACEPRINTK is usually not needed for olddefconfig
           make O=out \
                ARCH=${ARCH} \
                CC=${CC} CXX=${CXX} LD=${LD} HOSTCC=${HOSTCC} HOSTCXX=${HOSTCXX} HOSTLD=${HOSTLD} \
@@ -63,11 +80,13 @@ jobs:
                olddefconfig
 
           #─── Build kernel + DTBs ──────────────────────────────────────────────
-          make -j$(nproc) O=out \
+          # Added STOP_SHIP_TRACEPRINTK=1 here as per the config snippet
+          make -j$(nproc) O=out V=1 \
                ARCH=${ARCH} \
                CC=${CC} CXX=${CXX} LD=${LD} HOSTCC=${HOSTCC} HOSTCXX=${HOSTCXX} HOSTLD=${HOSTLD} \
                AR=${AR} HOSTAR=${HOSTAR} NM=${NM} HOSTNM=${HOSTNM} \
                HOSTLDFLAGS="${HOST_LDFLAGS}" \
+               STOP_SHIP_TRACEPRINTK=1 \
                Image.gz dtbs
 
           #─── Verify success ────────────────────────────────────────────────────
