@@ -1910,7 +1910,7 @@
 				};
 			};
 
-			/*modem_dbg_log: modem-dbg-log@324f0000 {
+			modem_dbg_log: modem-dbg-log@324f0000 {
 				compatible = "sprd,dbg-log-sharkl5", "sprd,dbg-log-sharkl5pro";
 	 			reg = <0 0x324f0000 0 0x4000>;
 				sprd,syscon-mm-ahb = <&mm_ahb_regs>;
@@ -1920,7 +1920,7 @@
 				sprd,dcfix;
 				sprd,mm;
 				status = "disabled";
-			}; */
+			};
  
 			hwlock: hwspinlock@327f0000 {
 				compatible = "sprd,hwspinlock-r3p0", "sprd,sharkl5pro-hwspinlock";
