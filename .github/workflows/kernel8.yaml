@@ -60,6 +60,7 @@ jobs:
           make O=out \
                ARCH=${ARCH} \
                CC=${CC} LD=${LD} \
+               HOSTLDFLAGS="${HOST_LDFLAGS}" \
                olddefconfig
 
           #─── Build kernel + DTBs ──────────────────────────────────────────────
@@ -67,6 +68,7 @@ jobs:
           make -j$(nproc) O=out \
                ARCH=${ARCH} \
                CC=${CC} LD=${LD} \
+               HOSTLDFLAGS="${HOST_LDFLAGS}" \
                STOP_SHIP_TRACEPRINTK=1 \
                Image.gz dtbs
 
