@@ -35,23 +35,14 @@ jobs:
       - name: 🚀 Build Kernel (no GCC anywhere)
         working-directory: kernel_source
         run: |
-          #─── Basic env ─────────────────────────────────────────────────────────
-          export ARCH=${{ env.ARCH }}
-          export CROSS_COMPILE="aarch64-linux-gnu-"
-          export KBUILD_BUILD_USER="GitHubActions"
-          export KBUILD_BUILD_HOST="github.com"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export KBUILD_BUILD_USER=GitHubActions
+          export KBUILD_BUILD_HOST=github.com
 
-          #─── Force LLVM for *everything* ────────────────────────────────────────
           export PATH=${{ github.workspace }}/clang/bin:$PATH
           export CC=clang
-          export LD=ld.lld
-          export HOSTCC=clang
-          export AR=llvm-ar
-          export NM=llvm-nm
-          export OBJCOPY=llvm-objcopy
-          export OBJDUMP=llvm-objdump
-          export STRIP=llvm-strip
-          export READELF=llvm-readelf
           export LLVM=1
           export LLVM_IAS=1
 
