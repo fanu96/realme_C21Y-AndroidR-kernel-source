@@ -22,6 +22,7 @@
 #include "sprd-sound-fe-be.dtsi"
 #include "extra_sound_card_component.dtsi"
 #include "ums512-mach.dtsi"
+#include "sharkl5Pro.dtsi"
 
 / {
 	model = "Unisoc UMS512 1H10 board";
@@ -1041,8 +1042,8 @@
 	};
 };
 
-/*&modem_dbg_log {
+&modem_dbg_log {
 	vddio-supply = <&vddcamio>;
 	mipi-switch-en-gpios = <&ap_gpio 55 GPIO_ACTIVE_HIGH>;
 	mipi-switch-mode-gpios = <&ap_gpio 8 GPIO_ACTIVE_HIGH>;
-};*/
+};
