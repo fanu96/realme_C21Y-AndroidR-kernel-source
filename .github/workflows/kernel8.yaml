@@ -38,6 +38,7 @@ jobs:
         run: |
           #─── Basic env ─────────────────────────────────────────────────────────
           export ARCH=${{ env.ARCH }}
+          export CROSS_COMPILE="aarch64-linux-gnu-"
           export KBUILD_BUILD_USER="GitHubActions"
           export KBUILD_BUILD_HOST="github.com"
 
