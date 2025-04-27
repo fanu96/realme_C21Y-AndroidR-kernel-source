@@ -10,20 +10,15 @@
 #   - squashfs-tools >= 4.0    (mksquashfs -version)
 #   - openssl & libcrypto >= 1.0.0 (openssl version)
 # ----------------------------------------------------------------------------
-name: Build Kernel for Realme C21Y (RMX3261/RMX3263) with Custom Config + olddefconfig for Realme C21Y (RMX3261/RMX3263) with Custom Config + olddefconfig
+name: Build Kernel for Realme C21Y (RMX3261/RMX3263)
 
 on:
   workflow_dispatch:
 
 env:
   ARCH: arm64
-  CLANG_TRIPLE: aarch64-linux-gnu-
-  CROSS_COMPILE: aarch64-linux-androidkernel-
-  LINUX_GCC_CROSS_COMPILE_PREBUILTS_BIN: prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin
-  FILES: |
-    arch/arm64/boot/Image.gz
-    vmlinux
-    System.map
+  # Use standard GNU triple, aligns with Clang target and non-AOSP context
+  CROSS_COMPILE: aarch64-linux-gnu-
   # Strip trace-printk calls for release builds
   STOP_SHIP_TRACEPRINTK: 1
 
@@ -60,9 +55,7 @@ jobs:
 
           #─── Basic environment ─────────────────────────────────────────────
           export ARCH=${{ env.ARCH }}
-          export CLANG_TRIPLE=${{ env.CLANG_TRIPLE }}
           export CROSS_COMPILE=${{ env.CROSS_COMPILE }}
-          export LINUX_GCC_CROSS_COMPILE_PREBUILTS_BIN=${{ env.LINUX_GCC_CROSS_COMPILE_PREBUILTS_BIN }}
           export KBUILD_BUILD_USER="GitHubActions"
           export KBUILD_BUILD_HOST="github.com"
 
@@ -84,12 +77,12 @@ jobs:
           export READELF=llvm-readelf
           export LLVM=1
           export LLVM_IAS=1
-          # Ensure -fuse-ld=lld for all link steps
-          export LDFLAGS="-fuse-ld=lld"
+          # Note: export LDFLAGS="-fuse-ld=lld" likely redundant, removed for clarity
 
           #─── YAML libs for dtc ─────────────────────────────────────────────
-          export PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}"
-          YAML_LIBS=$(pkg-config --libs yaml-0.1 || echo "-lyaml -L/usr/lib/x86_64-linux-gnu")
+          # Ensure absolute path for pkgconfig
+          export PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH:-}"
+          YAML_LIBS=$(pkg-config --libs yaml-0.1 2>/dev/null || echo "-lyaml -L/usr/lib/x86_64-linux-gnu")
           export HOST_LDFLAGS="$YAML_LIBS"
 
           #─── Prepare output & config ───────────────────────────────────────
@@ -97,20 +90,21 @@ jobs:
           cp stock_kernel.config out/.config
 
           #─── Update config with defaults non-interactively ────────────────
+          # Make inherits exported vars (CC, LD, AR, NM, HOSTCC, HOSTLD, etc.)
           make O=out \
                ARCH=$ARCH \
-               CC=$CC CXX=$CXX LD=$LD \
-               HOSTCC=$HOSTCC HOSTCXX=$HOSTCXX HOSTLD=$HOSTLD \
-               LDFLAGS="$LDFLAGS" HOST_LDFLAGS="$HOST_LDFLAGS" \
+               HOST_LDFLAGS="$HOST_LDFLAGS" \
                olddefconfig
 
           #─── Build Image + DTBs ───────────────────────────────────────────
+          # Make inherits exported vars (CC, LD, AR, NM, HOSTCC, HOSTLD, etc.)
           make -j$(nproc) O=out V=1 \
                ARCH=$ARCH \
-               CC=$CC CXX=$CXX LD=$LD \
-               LDFLAGS="$LDFLAGS" HOST_LDFLAGS="$HOST_LDFLAGS" \
+               HOST_LDFLAGS="$HOST_LDFLAGS" \
                STOP_SHIP_TRACEPRINTK=${{ env.STOP_SHIP_TRACEPRINTK }} \
                Image.gz dtbs
+               # If vmlinux/System.map are needed, add vmlinux target here
+               # and copy them in the next step.
 
           #─── Verify success ───────────────────────────────────────────────
           if [ ! -f out/arch/$ARCH/boot/Image.gz ]; then
@@ -123,8 +117,10 @@ jobs:
         run: |
           mkdir -p $GITHUB_WORKSPACE/artifact
           cp kernel_source/out/arch/${{ env.ARCH }}/boot/Image.gz $GITHUB_WORKSPACE/artifact/
-          find kernel_source/out/arch/${{ env.ARCH }}/boot/dts/ -name '*.dtb' -exec cp {} $GITHUB_WORKSPACE/artifact/ \
-            \;
+          # If vmlinux/System.map were built, copy them here:
+          # cp kernel_source/out/vmlinux $GITHUB_WORKSPACE/artifact/
+          # cp kernel_source/out/System.map $GITHUB_WORKSPACE/artifact/
+          find kernel_source/out/arch/${{ env.ARCH }}/boot/dts/ -name '*.dtb' -exec cp {} $GITHUB_WORKSPACE/artifact/ \;
 
       - name: 📤 Upload Kernel Artifact
         uses: actions/upload-artifact@v4
@@ -132,4 +128,3 @@ jobs:
           name: kernel-${{ github.run_id }}
           path: ${{ github.workspace }}/artifact/*
           if-no-files-found: error
-
