@@ -28,21 +28,21 @@ jobs:
       - name: 📥 Download Clang Toolchain (crDroid r353983c / Clang 11.0.2)
         run: |
           git clone --depth=1 https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-6573524 clang
+          # Put clang/bin (with clang, clang++, ld.lld, llvm-ar, etc.) first in PATH
           echo "${{ github.workspace }}/clang/bin" >> $GITHUB_PATH
           clang --version
 
-      - name: 🚀 Build Kernel (LLVM + LLD only)
+      - name: 🚀 Build Kernel (no GCC anywhere)
         working-directory: kernel_source
         run: |
-          set -euo pipefail
-          # Basic environment
+          #─── Basic env ─────────────────────────────────────────────────────────
           export ARCH=${{ env.ARCH }}
           export CROSS_COMPILE="aarch64-linux-gnu-"
           export KBUILD_BUILD_USER="GitHubActions"
           export KBUILD_BUILD_HOST="github.com"
 
-          # Force LLVM front-end and LLD linker
-          export PATH="${{ github.workspace }}/clang/bin:$PATH"
+          #─── Force LLVM for *everything* ────────────────────────────────────────
+          export PATH=${{ github.workspace }}/clang/bin:$PATH
           export CC=clang
           export CXX=clang++
           export LD=ld.lld
@@ -50,54 +50,45 @@ jobs:
           export HOSTCXX=clang++
           export HOSTLD=ld.lld
           export AR=llvm-ar
+          export HOSTAR=llvm-ar
           export NM=llvm-nm
+          export HOSTNM=llvm-nm
           export OBJCOPY=llvm-objcopy
           export OBJDUMP=llvm-objdump
           export STRIP=llvm-strip
           export READELF=llvm-readelf
           export LLVM=1
           export LLVM_IAS=1
-          # Explicit LDFLAGS to ensure -fuse-ld=lld
           export LDFLAGS="-fuse-ld=lld"
 
-          # Silence warnings-as-errors in known driver
-          export KCFLAGS="-Wno-error=format"
-          export HOSTKCFLAGS="-Wno-error=format"
-
-          # YAML libs for dtc
-          export PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}"
-          YAML_LIBS=$(pkg-config --libs yaml-0.1 || echo "-lyaml -L/usr/lib/x86_64-linux-gnu")
+          #─── YAML libs for dtc ──────────────────────────────────────────────────
+          export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}
+          YAML_LIBS=$(pkg-config --libs yaml-0.1 2>/dev/null || echo "-lyaml -L/usr/lib/x86_64-linux-gnu")
           export HOST_LDFLAGS="$YAML_LIBS"
 
-          # Prepare output & config
+          #─── Prepare output & config ───────────────────────────────────────────
           mkdir -p out
           cp stock_kernel.config out/.config
 
-          # Update config with defaults non-interactively
+          #─── Update config w/ defaults ────────────────────────────────────────
           make O=out \
-               ARCH=$ARCH \
-               CC=$CC CXX=$CXX LD=$LD \
-               HOSTCC=$HOSTCC HOSTCXX=$HOSTCXX HOSTLD=$HOSTLD \
-               AR=$AR NM=$NM \
-               LDFLAGS="$LDFLAGS" \
-               KCFLAGS="$KCFLAGS" \
-               HOSTLDFLAGS="$HOST_LDFLAGS" \
+               ARCH=${ARCH} \
+               CC=${CC} CXX=${CXX} LD=${LD} HOSTCC=${HOSTCC} HOSTCXX=${HOSTCXX} HOSTLD=${HOSTLD} \
+               AR=${AR} HOSTAR=${HOSTAR} NM=${NM} HOSTNM=${HOSTNM} \
+               HOSTLDFLAGS="${HOST_LDFLAGS}" \
                olddefconfig
 
-          # Build kernel Image + DTBs
+          #─── Build kernel + DTBs ──────────────────────────────────────────────
           make -j$(nproc) O=out V=1 \
-               ARCH=$ARCH \
-               CC=$CC CXX=$CXX LD=$LD \
-               HOSTCC=$HOSTCC HOSTCXX=$HOSTCXX HOSTLD=$HOSTLD \
-               AR=$AR NM=$NM \
-               LDFLAGS="$LDFLAGS" \
-               KCFLAGS="$KCFLAGS" \
-               HOSTLDFLAGS="$HOST_LDFLAGS" \
-               Image dtbs
+               ARCH=${ARCH} \
+               CC=${CC} CXX=${CXX} LD=${LD} HOSTCC=${HOSTCC} HOSTCXX=${HOSTCXX} HOSTLD=${HOSTLD} \
+               AR=${AR} HOSTAR=${HOSTAR} NM=${NM} HOSTNM=${HOSTNM} \
+               HOSTLDFLAGS="${HOST_LDFLAGS}" \
+               Image.gz dtbs
 
-          # Verify
-          if [ ! -f out/arch/$ARCH/boot/Image ]; then
-            echo "❌ Build failed: Missing Image"
+          #─── Verify success ────────────────────────────────────────────────────
+          if [ ! -f out/arch/${ARCH}/boot/Image.gz ]; then
+            echo "❌ Build failed: out/arch/${ARCH}/boot/Image.gz not found."
             exit 1
           fi
           echo "✅ Kernel build successful!"
@@ -105,7 +96,7 @@ jobs:
       - name: 📦 Prepare Artifact
         run: |
           mkdir -p $GITHUB_WORKSPACE/artifact
-          cp kernel_source/out/arch/${{ env.ARCH }}/boot/Image $GITHUB_WORKSPACE/artifact/
+          cp kernel_source/out/arch/${{ env.ARCH }}/boot/Image.gz $GITHUB_WORKSPACE/artifact/
           find kernel_source/out/arch/${{ env.ARCH }}/boot/dts/ -name '*.dtb' -exec cp {} $GITHUB_WORKSPACE/artifact/ \;
 
       - name: 📤 Upload Kernel Artifact
@@ -114,4 +105,3 @@ jobs:
           name: kernel-${{ github.run_id }}
           path: ${{ github.workspace }}/artifact/*
           if-no-files-found: error
-
