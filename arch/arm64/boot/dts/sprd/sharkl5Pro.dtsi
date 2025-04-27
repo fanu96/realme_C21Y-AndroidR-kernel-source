@@ -1920,7 +1920,7 @@
 				sprd,dcfix;
 				sprd,mm;
 				status = "disabled";
-			};/*
+			};*/
  
 			hwlock: hwspinlock@327f0000 {
 				compatible = "sprd,hwspinlock-r3p0", "sprd,sharkl5pro-hwspinlock";
