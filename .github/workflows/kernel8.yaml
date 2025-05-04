@@ -1,26 +1,13 @@
 # .github/workflows/build_kernel.yaml
-# ----------------------------------------------------------------------------
-# Minimal host tool versions required (from Documentation/process/changes.rst):
-#   - GNU C (gcc) >= 3.2      (gcc --version)
-#   - GNU make >= 3.81         (make --version)
-#   - binutils >= 2.20         (ld -v)
-#   - util‑linux >= 2.10o      (fdformat --version)
-#   - kmod >= 13               (depmod -V)
-#   - e2fsprogs >= 1.41.4      (e2fsck -V)
-#   - squashfs-tools >= 4.0    (mksquashfs -version)
-#   - openssl & libcrypto >= 1.0.0 (openssl version)
-# ----------------------------------------------------------------------------
-name: Build Kernel for Realme C21Y (RMX3261/RMX3263)
+name: Build Kernel & Modules for Realme C21Y (RMX3261/RMX3263) - Refined
 
 on:
   workflow_dispatch:
 
 env:
   ARCH: arm64
-  # Use standard GNU triple, aligns with Clang target and non-AOSP context
-  CROSS_COMPILE: aarch64-linux-gnu-
-  # Strip trace-printk calls for release builds
-  STOP_SHIP_TRACEPRINTK: 1
+  # Define the staging path for modules installation
+  MODULES_STAGING_PATH: ${{ github.workspace }}/modules_staging
 
 jobs:
   build:
@@ -44,87 +31,118 @@ jobs:
       - name: 📥 Download Clang Toolchain (crDroid r353983c / Clang 11.0.2)
         run: |
           git clone --depth=1 https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-6573524 clang
-          # Prepend clang/bin (with clang, clang++, ld.lld, llvm-ar, etc.) to PATH
           echo "${{ github.workspace }}/clang/bin" >> $GITHUB_PATH
           clang --version
 
-      - name: 🚀 Build Kernel (LLVM front-end + LLD linker)
+      - name: 🚀 Build Kernel + Modules & Install
         working-directory: kernel_source
         run: |
-          set -euo pipefail
-
-          #─── Basic environment ─────────────────────────────────────────────
+          #─── Basic env ─────────────────────────────────────────────────────────
           export ARCH=${{ env.ARCH }}
-          export CROSS_COMPILE=${{ env.CROSS_COMPILE }}
+          export CROSS_COMPILE="aarch64-linux-gnu-"
           export KBUILD_BUILD_USER="GitHubActions"
           export KBUILD_BUILD_HOST="github.com"
 
-          #─── Force LLVM for everything ─────────────────────────────────────
-          export PATH="${{ github.workspace }}/clang/bin:$PATH"
-          export CC=clang
-          export CXX=clang++
-          export LD=ld.lld
-          export HOSTCC=clang
-          export HOSTCXX=clang++
-          export HOSTLD=ld.lld
-          export AR=llvm-ar
-          export HOSTAR=llvm-ar
-          export NM=llvm-nm
-          export HOSTNM=llvm-nm
-          export OBJCOPY=llvm-objcopy
-          export OBJDUMP=llvm-objdump
-          export STRIP=llvm-strip
-          export READELF=llvm-readelf
-          export LLVM=1
-          export LLVM_IAS=1
-          # Note: export LDFLAGS="-fuse-ld=lld" likely redundant, removed for clarity
+          #─── Force LLVM for *everything* ────────────────────────────────────────
+          export PATH=${{ github.workspace }}/clang/bin:$PATH
+          export CC=clang CXX=clang++ LD=ld.lld HOSTCC=clang HOSTCXX=clang++ HOSTLD=ld.lld
+          export AR=llvm-ar HOSTAR=llvm-ar NM=llvm-nm HOSTNM=llvm-nm
+          export OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip READELF=llvm-readelf
+          export LLVM=1 LLVM_IAS=1
 
-          #─── YAML libs for dtc ─────────────────────────────────────────────
-          # Ensure absolute path for pkgconfig
-          export PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH:-}"
+          #─── YAML libs for dtc ──────────────────────────────────────────────────
+          export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}
           YAML_LIBS=$(pkg-config --libs yaml-0.1 2>/dev/null || echo "-lyaml -L/usr/lib/x86_64-linux-gnu")
           export HOST_LDFLAGS="$YAML_LIBS"
 
-          #─── Prepare output & config ───────────────────────────────────────
+          #─── Prepare output & config ───────────────────────────────────────────
+          # Important: Ensure your stock_kernel.config has CONFIG_MODULES=y etc.
+          # You might want to add CONFIG_LOCALVERSION="-my-build-tag" for easier identification
           mkdir -p out
           cp stock_kernel.config out/.config
 
-          #─── Update config with defaults non-interactively ────────────────
-          # Make inherits exported vars (CC, LD, AR, NM, HOSTCC, HOSTLD, etc.)
-          make O=out \
-               ARCH=$ARCH \
-               HOST_LDFLAGS="$HOST_LDFLAGS" \
-               olddefconfig
+          #─── Update config w/ defaults ────────────────────────────────────────
+          make O=out olddefconfig
 
-          #─── Build Image + DTBs ───────────────────────────────────────────
-          # Make inherits exported vars (CC, LD, AR, NM, HOSTCC, HOSTLD, etc.)
+          #─── Build kernel + DTBs + Modules ──────────────────────────────────────
+          echo "::group::Build Kernel, DTBs, and Modules"
           make -j$(nproc) O=out V=1 \
-               ARCH=$ARCH \
-               HOST_LDFLAGS="$HOST_LDFLAGS" \
-               STOP_SHIP_TRACEPRINTK=${{ env.STOP_SHIP_TRACEPRINTK }} \
-               Image.gz dtbs
-               # If vmlinux/System.map are needed, add vmlinux target here
-               # and copy them in the next step.
+               STOP_SHIP_TRACEPRINTK=1 \
+               Image.gz dtbs modules
+          echo "::endgroup::"
 
-          #─── Verify success ───────────────────────────────────────────────
-          if [ ! -f out/arch/$ARCH/boot/Image.gz ]; then
-            echo "❌ Build failed: Missing out/arch/$ARCH/boot/Image.gz"
+          #─── Install Modules to staging path (Clean first) ─────────────────────
+          echo "::group::Install Modules & Run depmod"
+          # Clean previous staging area for reproducibility
+          rm -rf "${{ env.MODULES_STAGING_PATH }}"
+          mkdir -p "${{ env.MODULES_STAGING_PATH }}"
+          # Install modules
+          make O=out \
+               INSTALL_MOD_PATH="${{ env.MODULES_STAGING_PATH }}" \
+               modules_install
+          # Find kernel version string (e.g., 5.4.120-mykernel+)
+          KVER=$(ls "${{ env.MODULES_STAGING_PATH }}/lib/modules/")
+          if [ -z "$KVER" ]; then
+            echo "⚠️ Warning: Kernel version directory not found in staging path. Skipping depmod."
+          elif [ ! -d "${{ env.MODULES_STAGING_PATH }}/lib/modules/$KVER/kernel" ]; then
+            echo "⚠️ Warning: No actual kernel modules found in modules install directory for $KVER. Skipping depmod."
+          else
+            echo "Found kernel version: $KVER"
+            # Generate modules.dep and map files. Requires kmod package (installed).
+            # -b specifies the base directory relative to which module paths are calculated.
+            echo "Running depmod for $KVER..."
+            depmod -a -b "${{ env.MODULES_STAGING_PATH }}" "$KVER"
+            echo "depmod finished."
+          fi
+          echo "::endgroup::"
+
+          #─── Verify build success ─────────────────────────────────────────────
+          if [ ! -f out/arch/${ARCH}/boot/Image.gz ]; then
+            echo "❌ Build failed: out/arch/${ARCH}/boot/Image.gz not found."
             exit 1
           fi
           echo "✅ Kernel build successful!"
 
-      - name: 📦 Prepare Artifact
+      - name: 📦 Prepare Artifact with Versioned Modules
         run: |
-          mkdir -p $GITHUB_WORKSPACE/artifact
-          cp kernel_source/out/arch/${{ env.ARCH }}/boot/Image.gz $GITHUB_WORKSPACE/artifact/
-          # If vmlinux/System.map were built, copy them here:
-          # cp kernel_source/out/vmlinux $GITHUB_WORKSPACE/artifact/
-          # cp kernel_source/out/System.map $GITHUB_WORKSPACE/artifact/
-          find kernel_source/out/arch/${{ env.ARCH }}/boot/dts/ -name '*.dtb' -exec cp {} $GITHUB_WORKSPACE/artifact/ \;
+          ARTIFACT_DIR="$GITHUB_WORKSPACE/artifact"
+          mkdir -p "$ARTIFACT_DIR"
+
+          # Copy Kernel Image
+          cp kernel_source/out/arch/${{ env.ARCH }}/boot/Image.gz "$ARTIFACT_DIR/"
+
+          # Copy DTBs
+          find kernel_source/out/arch/${{ env.ARCH }}/boot/dts/ -name '*.dtb' -exec cp {} "$ARTIFACT_DIR/" \;
+
+          # Copy Modules (if they exist) into a versioned directory
+          MODULES_BASE_DIR="${{ env.MODULES_STAGING_PATH }}/lib/modules"
+          if [ -d "$MODULES_BASE_DIR" ] && [ "$(ls -A $MODULES_BASE_DIR)" ]; then
+            # Get the kernel version directory name (should be just one)
+            KVER=$(ls "$MODULES_BASE_DIR")
+            MODULES_INSTALL_DIR="$MODULES_BASE_DIR/$KVER"
+
+            if [ -d "$MODULES_INSTALL_DIR/kernel" ]; then
+              echo "Modules found for kernel $KVER, copying to artifact/modules/$KVER"
+              mkdir -p "$ARTIFACT_DIR/modules/$KVER"
+              # Copy the contents: kernel/, modules.* files etc.
+              cp -a "$MODULES_INSTALL_DIR/." "$ARTIFACT_DIR/modules/$KVER/"
+
+              # Optional: Create a tarball of the modules
+              # echo "Creating modules tarball..."
+              # tar czf "$ARTIFACT_DIR/modules-$KVER.tar.gz" -C "$ARTIFACT_DIR/modules" "$KVER"
+              # rm -rf "$ARTIFACT_DIR/modules" # Clean up directory if only tarball is wanted
+
+            else
+              echo "No actual kernel modules (.ko files) found in $MODULES_INSTALL_DIR, skipping module packaging."
+            fi
+          else
+            echo "No kernel module directories found in staging path: $MODULES_BASE_DIR"
+          fi
+
 
       - name: 📤 Upload Kernel Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-${{ github.run_id }}
-          path: ${{ github.workspace }}/artifact/*
-          if-no-files-found: error
+          name: kernel-modules-${{ github.run_id }}
+          path: ${{ github.workspace }}/artifact/ # Uploads Image.gz, *.dtb, and modules/<kver>/ directory
+          if-no-files-found: error # Error if Image.gz is missing
