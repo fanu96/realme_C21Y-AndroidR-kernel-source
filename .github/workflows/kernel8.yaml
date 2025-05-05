@@ -1,12 +1,11 @@
 # .github/workflows/build_kernel.yaml
-name: Build Kernel & Modules for Realme C21Y (RMX3261/RMX3263) - Added Modules to Original Workflow
+name: Build Kernel & Modules (Stripped & Compressed) for Realme C21Y
 
 on:
   workflow_dispatch:
 
 env:
   ARCH: arm64
-  # Define the staging path for modules installation
   MODULES_STAGING_PATH: ${{ github.workspace }}/modules_staging
 
 jobs:
@@ -31,12 +30,10 @@ jobs:
       - name: 📥 Download Clang Toolchain (crDroid r353983c / Clang 11.0.2)
         run: |
           git clone --depth=1 https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-6573524 clang
-          # Put clang/bin first in PATH
           echo "${{ github.workspace }}/clang/bin" >> $GITHUB_PATH
           clang --version
 
       - name: 🚀 Build Kernel + Modules & Install
-        # Changed step name to reflect module building
         working-directory: kernel_source
         run: |
           #─── Basic env ─────────────────────────────────────────────────────────
@@ -46,24 +43,11 @@ jobs:
           export KBUILD_BUILD_HOST="github.com"
 
           #─── Force LLVM for *everything* ────────────────────────────────────────
-          # These exports are still important for tools Make might call internally
           export PATH=${{ github.workspace }}/clang/bin:$PATH
-          export CC=clang
-          export CXX=clang++
-          export LD=ld.lld
-          export HOSTCC=clang
-          export HOSTCXX=clang++
-          export HOSTLD=ld.lld
-          export AR=llvm-ar
-          export HOSTAR=llvm-ar
-          export NM=llvm-nm
-          export HOSTNM=llvm-nm
-          export OBJCOPY=llvm-objcopy
-          export OBJDUMP=llvm-objdump
-          export STRIP=llvm-strip
-          export READELF=llvm-readelf
-          export LLVM=1
-          export LLVM_IAS=1
+          export CC=clang CXX=clang++ LD=ld.lld HOSTCC=clang HOSTCXX=clang++ HOSTLD=ld.lld
+          export AR=llvm-ar HOSTAR=llvm-ar NM=llvm-nm HOSTNM=llvm-nm
+          export OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip READELF=llvm-readelf
+          export LLVM=1 LLVM_IAS=1
 
           #─── YAML libs for dtc ──────────────────────────────────────────────────
           export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}
@@ -73,106 +57,99 @@ jobs:
           #─── Prepare output & config ───────────────────────────────────────────
           mkdir -p out
           cp stock_kernel.config out/.config
-          # Important: Ensure your stock_kernel.config has CONFIG_MODULES=y etc.
-          # Consider adding CONFIG_LOCALVERSION="-my-build-tag" for easier identification
-
-          #─── Update config w/ defaults ────────────────────────────────────────
-          # Keeping your original explicit arguments here
           make O=out \
-               ARCH=${ARCH} \
-               CC=${CC} CXX=${CXX} LD=${LD} HOSTCC=${HOSTCC} HOSTCXX=${HOSTCXX} HOSTLD=${HOSTLD} \
-               AR=${AR} HOSTAR=${HOSTAR} NM=${NM} HOSTNM=${HOSTNM} \
-               HOSTLDFLAGS="${HOST_LDFLAGS}" \
+               ARCH=${ARCH} CC=${CC} CXX=${CXX} LD=${LD} HOSTCC=${HOSTCC} HOSTCXX=${HOSTCXX} HOSTLD=${HOSTLD} \
+               AR=${AR} HOSTAR=${HOSTAR} NM=${NM} HOSTNM=${HOSTNM} HOSTLDFLAGS="${HOST_LDFLAGS}" \
                olddefconfig
 
           #─── Build kernel + DTBs + Modules ───────────────────────────────────
-          # Added 'modules' target. Keeping your original explicit arguments.
           echo "::group::Build Kernel, DTBs, and Modules"
           make -j$(nproc) O=out V=1 \
-               ARCH=${ARCH} \
-               CC=${CC} CXX=${CXX} LD=${LD} HOSTCC=${HOSTCC} HOSTCXX=${HOSTCXX} HOSTLD=${HOSTLD} \
-               AR=${AR} HOSTAR=${HOSTAR} NM=${NM} HOSTNM=${HOSTNM} \
-               HOSTLDFLAGS="${HOST_LDFLAGS}" \
+               ARCH=${ARCH} CC=${CC} CXX=${CXX} LD=${LD} HOSTCC=${HOSTCC} HOSTCXX=${HOSTCXX} HOSTLD=${HOSTLD} \
+               AR=${AR} HOSTAR=${HOSTAR} NM=${NM} HOSTNM=${HOSTNM} HOSTLDFLAGS="${HOST_LDFLAGS}" \
                STOP_SHIP_TRACEPRINTK=1 \
-               Image.gz dtbs modules # <-- Added 'modules' here
+               Image.gz dtbs modules
           echo "::endgroup::"
 
-          #─── Install Modules to staging path (Clean first) & Run depmod ───────
-          # <<< NEW SECTION START >>>
-          echo "::group::Install Modules & Run depmod"
-          # Clean previous staging area for reproducibility
+          #─── Install Modules, Run depmod, Strip Modules ───────────────────────
+          # <<< MODIFIED SECTION START >>>
+          echo "::group::Install, Depmod, Strip Modules"
+          # Clean previous staging area
           rm -rf "${{ env.MODULES_STAGING_PATH }}"
           mkdir -p "${{ env.MODULES_STAGING_PATH }}"
-          # Install modules. Keeping explicit arguments for consistency with your style.
+          # Install modules
           make O=out \
-               ARCH=${ARCH} \
-               CC=${CC} CXX=${CXX} LD=${LD} HOSTCC=${HOSTCC} HOSTCXX=${HOSTCXX} HOSTLD=${HOSTLD} \
-               AR=${AR} HOSTAR=${HOSTAR} NM=${NM} HOSTNM=${HOSTNM} \
-               HOSTLDFLAGS="${HOST_LDFLAGS}" \
+               ARCH=${ARCH} CC=${CC} CXX=${CXX} LD=${LD} HOSTCC=${HOSTCC} HOSTCXX=${HOSTCXX} HOSTLD=${HOSTLD} \
+               AR=${AR} HOSTAR=${HOSTAR} NM=${NM} HOSTNM=${HOSTNM} HOSTLDFLAGS="${HOST_LDFLAGS}" \
                INSTALL_MOD_PATH="${{ env.MODULES_STAGING_PATH }}" \
                modules_install
-          # Find kernel version string (e.g., 5.4.120-mykernel+)
+          # Find kernel version string
           KVER=$(ls "${{ env.MODULES_STAGING_PATH }}/lib/modules/" 2>/dev/null || echo "")
           if [ -z "$KVER" ]; then
-            echo "⚠️ Warning: Kernel version directory not found in staging path. Skipping depmod."
+            echo "⚠️ Warning: Kernel version directory not found. Skipping depmod and strip."
           elif [ ! -d "${{ env.MODULES_STAGING_PATH }}/lib/modules/$KVER/kernel" ]; then
-            echo "⚠️ Warning: No actual kernel modules found in modules install directory for $KVER. Skipping depmod."
+            echo "⚠️ Warning: No kernel modules found for $KVER. Skipping depmod and strip."
           else
+            MODULES_DIR="${{ env.MODULES_STAGING_PATH }}/lib/modules/$KVER"
             echo "Found kernel version: $KVER"
-            # Generate modules.dep and map files. Requires kmod package (installed).
-            echo "Running depmod for $KVER..."
-            # Using HOST_ overrides for depmod might not be needed, but keeping pattern
-            # Note: depmod itself isn't typically cross-compiled or clang-built, it uses host tools.
+            # Generate modules.dep etc.
+            echo "Running depmod..."
             depmod -a -b "${{ env.MODULES_STAGING_PATH }}" "$KVER"
             echo "depmod finished."
+            # Strip modules
+            echo "Stripping modules..."
+            # Use llvm-strip since we forced LLVM toolchain
+            # Alternatively, use 'find "$MODULES_DIR" -name '*.ko' -exec ${CROSS_COMPILE}strip --strip-unneeded {} +' if CROSS_COMPILE strip is preferred/available
+            find "$MODULES_DIR" -name '*.ko' -exec ${STRIP} --strip-unneeded {} +
+            echo "Stripping finished."
           fi
           echo "::endgroup::"
-          # <<< NEW SECTION END >>>
+          # <<< MODIFIED SECTION END >>>
 
           #─── Verify build success (Image.gz only) ─────────────────────────────
-          # Your original verification step is unchanged
           if [ ! -f out/arch/${ARCH}/boot/Image.gz ]; then
             echo "❌ Build failed: out/arch/${ARCH}/boot/Image.gz not found."
             exit 1
           fi
-          echo "✅ Kernel build successful!" # Might want to add "and module installation"
+          echo "✅ Kernel build and module processing successful!"
 
-      - name: 📦 Prepare Artifact with Versioned Modules
+      - name: 📦 Prepare Artifact (Compress Modules)
         # Updated step name and logic
         run: |
           ARTIFACT_DIR="$GITHUB_WORKSPACE/artifact"
           mkdir -p "$ARTIFACT_DIR"
 
-          # Copy Kernel Image (Original)
+          # Copy Kernel Image
           cp kernel_source/out/arch/${{ env.ARCH }}/boot/Image.gz "$ARTIFACT_DIR/"
 
-          # Copy DTBs (Original)
+          # Copy DTBs
           find kernel_source/out/arch/${{ env.ARCH }}/boot/dts/ -name '*.dtb' -exec cp {} "$ARTIFACT_DIR/" \;
 
-          # <<< NEW SECTION START >>>
-          # Copy Modules (if they exist) into a versioned directory
+          # <<< MODIFIED SECTION START >>>
+          # Create compressed tarball of modules (if they exist)
           MODULES_BASE_DIR="${{ env.MODULES_STAGING_PATH }}/lib/modules"
           if [ -d "$MODULES_BASE_DIR" ] && [ "$(ls -A $MODULES_BASE_DIR)" ]; then
-            # Get the kernel version directory name
             KVER=$(ls "$MODULES_BASE_DIR")
             MODULES_INSTALL_DIR="$MODULES_BASE_DIR/$KVER"
 
             if [ -d "$MODULES_INSTALL_DIR/kernel" ]; then
-              echo "Modules found for kernel $KVER, copying to artifact/modules/$KVER"
-              mkdir -p "$ARTIFACT_DIR/modules/$KVER"
-              # Copy the contents: kernel/, modules.* files etc.
-              cp -a "$MODULES_INSTALL_DIR/." "$ARTIFACT_DIR/modules/$KVER/"
+              echo "Modules found for kernel $KVER, creating compressed tarball artifact/modules-$KVER.tar.gz"
+              # Create the tar.gz file containing the contents of the KVER directory
+              # -C changes directory before adding files, so paths inside tarball are relative to $MODULES_INSTALL_DIR
+              tar czf "$ARTIFACT_DIR/modules-$KVER.tar.gz" -C "$MODULES_INSTALL_DIR" .
+              # Example: Inside modules-5.4.120+.tar.gz will be ./kernel/, ./modules.dep, etc.
             else
               echo "No actual kernel modules (.ko files) found in $MODULES_INSTALL_DIR, skipping module packaging."
             fi
           else
-            echo "No kernel module directories found in staging path: $MODULES_BASE_DIR. Check CONFIG_MODULES=y in your kernel config."
+            echo "No kernel module directories found in staging path: $MODULES_BASE_DIR."
           fi
-          # <<< NEW SECTION END >>>
+          # <<< MODIFIED SECTION END >>>
 
       - name: 📤 Upload Kernel Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-modules-${{ github.run_id }} # Renamed artifact slightly
-          path: ${{ github.workspace }}/artifact/ # Uploads Image.gz, *.dtb, and modules/<kver>/ directory (if present)
+          name: kernel-modules-${{ github.run_id }}
+          # Upload everything in the artifact directory (Image.gz, *.dtb, modules-*.tar.gz)
+          path: ${{ github.workspace }}/artifact/*
           if-no-files-found: error # Error if Image.gz is missing
