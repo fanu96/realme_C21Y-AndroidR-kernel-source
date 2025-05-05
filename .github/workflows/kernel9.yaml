@@ -1,17 +1,14 @@
 # .github/workflows/build_kernel.yaml
-name: Build Kernel & Modules (Stripped & Compressed) for Realme C21Y (Using Specific Flags)
+name: Build Kernel & Modules (Simplified Env) for Realme C21Y
 
 on:
   workflow_dispatch:
 
 env:
-  # Define Workspace and Output Directory (used by the 'Set build args' step)
-  WORKSPACE: ${{ github.workspace }}
+  # Define Output Directory and Modules Staging Path
   OUT_DIR: ${{ github.workspace }}/out
   MODULES_STAGING_PATH: ${{ github.workspace }}/modules_staging
-  # CCACHE Configuration (as per JSON)
-  ENABLE_CCACHE: true
-  # CCACHE_DIR: ${{ github.workspace }}/.ccache # Optional: Define if needed
+  # ARCH is set via export in the build step now
 
 jobs:
   build:
@@ -31,136 +28,92 @@ jobs:
             flex git kmod libelf-dev libncurses5-dev libssl-dev \
             lsb-release make python3 rsync wget zip unzip \
             libyaml-dev pkg-config \
-            jq ccache # Added jq and ccache
+            crossbuild-essential-arm64 # Keep this for potential host tools needed by build system
 
-      # --- Toolchain Setup (Based on JSON) ---
-      - name: 📥 Download Clang Toolchain (r416183b)
-        run: git clone --depth=1 https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-6573524 -b 10.0 clang
-
-      - name: 📥 Download GCC AArch64 Toolchain (4.9)
-        run: git clone --depth=1 https://github.com/rifsxd/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 -b lineage-19.1 aarch64-gcc
-
-      - name: 📥 Download GCC ARM Toolchain (4.9)
-        run: git clone --depth=1 https://github.com/rifsxd/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 -b lineage-19.1 arm-gcc
-
-      - name: ➕ Add Toolchains to PATH
+      # --- Toolchain Setup (Required by EXPORTED variables) ---
+      - name: 📥 Download Clang Toolchain (r416183b) & Add to PATH
         run: |
-          echo "${{ env.WORKSPACE }}/clang/bin" >> $GITHUB_PATH
-          echo "${{ env.WORKSPACE }}/aarch64-gcc/bin" >> $GITHUB_PATH
-          echo "${{ env.WORKSPACE }}/arm-gcc/bin" >> $GITHUB_PATH
-          echo "Updated PATH: $PATH"
-          clang --version
-          aarch64-linux-android-gcc --version
-          arm-linux-androideabi-gcc --version
+          git clone --depth=1 https://github.com/rifsxd/android_prebuilts_clang_kernel_linux-x86_clang-r416183b -b lineage-20.0 clang
+          echo "${{ github.workspace }}/clang/bin" >> $GITHUB_PATH
+          echo "Clang PATH added to GITHUB_PATH"
 
-      # --- Build Argument Generation (Based on Snippet & JSON) ---
-      - name: 😎 Set build args
-        id: generate-args
-        env:
-          # Embed the relevant params from the JSON directly here
-          # In a real scenario, this might come from matrix or a file
-          PARAMS_JSON: |
-            {
-              "ARCH": "arm64",
-              "CC": "clang",
-              "externalCommands": {
-                "CLANG_TRIPLE": "aarch64-linux-gnu-",
-                "CROSS_COMPILE": "aarch64-linux-android-",
-                "CROSS_COMPILE_ARM32": "arm-linux-androideabi-",
-                "LD": "ld.lld",
-                "AR": "llvm-ar",
-                "NM": "llvm-nm",
-                "OBJCOPY": "llvm-objcopy",
-                "OBJDUMP": "llvm-objdump",
-                "READELF": "llvm-readelf",
-                "OBJSIZE": "llvm-size",
-                "STRIP": "llvm-strip",
-                "LDGOLD": "aarch64-linux-gnu-ld.gold",
-                "LLVM_AR": "llvm-ar",
-                "LLVM_DIS": "llvm-dis",
-                "BSP_BUILD_ANDROID_OS": "y",
-                "BSP_BUILD_FAMILY": "qogirl6"
-              }
-            }
-          THREAD: $(nproc --all)
+      - name: 📥 Download GCC AArch64 Toolchain (4.9) & Add to PATH
         run: |
-          echo "🤔 PATH Variable: $PATH" # Verify toolchains are in PATH
+          git clone --depth=1 https://github.com/rifsxd/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 -b lineage-19.1 aarch64-gcc
+          echo "${{ github.workspace }}/aarch64-gcc/bin" >> $GITHUB_PATH
+          echo "GCC AArch64 PATH added to GITHUB_PATH"
 
-          ARCH=$(echo "$PARAMS_JSON" | jq -r ".ARCH")
-          CC_VAL=$(echo "$PARAMS_JSON" | jq -r ".CC") # Use different variable name to avoid conflict with CC command
+      - name: 📥 Download GCC ARM Toolchain (4.9) & Add to PATH
+        run: |
+          git clone --depth=1 https://github.com/rifsxd/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 -b lineage-19.1 arm-gcc
+          echo "${{ github.workspace }}/arm-gcc/bin" >> $GITHUB_PATH
+          echo "GCC ARM PATH added to GITHUB_PATH"
 
-          args="-j${THREAD} O=${{ env.OUT_DIR }} ARCH=$ARCH"
-
-          # Set KBUILD User/Host (optional but good practice)
-          args="$args KBUILD_BUILD_USER=GitHubActions KBUILD_BUILD_HOST=github.com"
-
-          # Add CC handling
-          if [ -n "$CC_VAL" ]; then
-            if [[ "$CC_VAL" == *"/"* ]]; then
-              CC_VAL="${{ env.WORKSPACE }}/$CC_VAL" # Should not happen if CC=clang
-            fi
-
-            if [ "${{ env.ENABLE_CCACHE }}" = "true" ]; then
-              args="$args CC=\"ccache $CC_VAL\""
-            else
-              args="$args CC=$CC_VAL"
-            fi
-          fi
-
-          # Add externalCommands
-          while read -r externalCommand; do
-            key=$(echo "$externalCommand" | cut -d= -f1)
-            value=$(echo "$externalCommand" | cut -d= -f2)
-            if [[ "$value" == *"/"* ]]; then
-              # This logic seems intended for paths, but values like 'aarch64-linux-gnu-' don't need it.
-              # Let's keep it as per the original snippet just in case.
-               value="${{ env.WORKSPACE }}/$value"
-            fi
-            # Ensure values with spaces are quoted if necessary (though unlikely for these flags)
-            # Simple quoting for safety:
-            args="$args $key=\"$value\""
-          done < <(echo "$PARAMS_JSON" | jq -r '.externalCommands | to_entries[] | "\(.key)=\(.value)"')
-
-          # Add YAML Libs Handling (Required by dtc when using Clang Host tools)
-          YAML_LIBS=$(pkg-config --libs yaml-0.1 2>/dev/null || echo "-lyaml -L/usr/lib/x86_64-linux-gnu")
-          args="$args HOSTLDFLAGS=\"$YAML_LIBS\""
-
-          # Output for subsequent steps
-          echo "ARCH=$ARCH" >> $GITHUB_OUTPUT
-          echo "ARGS=$args" >> $GITHUB_OUTPUT
-
-          echo "Generated Build Args:"
-          echo "🤔 $args"
-
-
+      # --- Build Step using Exported Environment ---
       - name: 🚀 Build Kernel + Modules & Install
         working-directory: kernel_source
-        env:
-           # Make ARCH available for file path checks later, taken from generate-args output
-           ARCH: ${{ steps.generate-args.outputs.ARCH }}
-           # Make ARGS available to make commands
-           MAKE_ARGS: ${{ steps.generate-args.outputs.ARGS }}
         run: |
-          # Prepare output directory (O= is already in MAKE_ARGS)
-          # mkdir -p ${{ env.OUT_DIR }} # Not needed if O= is used, make creates it
+          #─── Verify PATH ─────────────────────────────────────────────────────
+          echo "Current PATH: $PATH"
+          echo "--- Verifying Toolchains ---"
+          which clang || echo "WARNING: clang not found"
+          which aarch64-linux-android-gcc || echo "WARNING: aarch64-linux-android-gcc not found"
+          which arm-linux-androideabi-gcc || echo "WARNING: arm-linux-androideabi-gcc not found"
+          which ld.lld || echo "WARNING: ld.lld not found"
+          which llvm-ar || echo "WARNING: llvm-ar not found"
+          echo "--------------------------"
 
-          #─── Prepare config ───────────────────────────────────────────
+          #─── Set Build Environment Variables (Exactly as provided) ────────────
+          # PATH is already set via GITHUB_PATH in previous steps
+          export ARCH="arm64"
+          export CC="clang"
+          export CLANG_TRIPLE="aarch64-linux-gnu-" # Note: Value changed to match Clang standard
+          export CROSS_COMPILE="aarch64-linux-android-"
+          export CROSS_COMPILE_ARM32="arm-linux-androideabi-"
+          export LD="ld.lld"
+          export AR="llvm-ar"
+          export NM="llvm-nm"
+          export OBJCOPY="llvm-objcopy"
+          export OBJDUMP="llvm-objdump"
+          export READELF="llvm-readelf"
+          export OBJSIZE="llvm-size"
+          export STRIP="llvm-strip"
+          export LDGOLD="aarch64-linux-gnu-ld.gold" # Usually not needed when LD=ld.lld, but keeping as requested
+          export LLVM_AR="llvm-ar"
+          export LLVM_DIS="llvm-dis"
+          export BSP_BUILD_ANDROID_OS="y"
+          export BSP_BUILD_FAMILY="qogirl6"
+          export KBUILD_BUILD_USER="fanu" # Good practice
+          export KBUILD_BUILD_HOST="github.com"    # Good practice
+
+          #─── YAML libs for dtc (still needed with HOSTCC=clang) ──────────────
+          YAML_LIBS=$(pkg-config --libs yaml-0.1 2>/dev/null || echo "-lyaml -L/usr/lib/x86_64-linux-gnu")
+          export HOSTLDFLAGS="$YAML_LIBS"
+
+          #─── Prepare output & config ───────────────────────────────────────────
+          mkdir -p ${{ env.OUT_DIR }}
           # IMPORTANT: Replace 'YOUR_C21Y_DEFCONFIG_NAME' with your actual defconfig file name
-          cp arch/${ARCH}/configs/YOUR_C21Y_DEFCONFIG_NAME ${{ env.OUT_DIR }}/.config
-          # Alternatively, if your defconfig is at the root:
-          # cp YOUR_C21Y_DEFCONFIG_NAME ${{ env.OUT_DIR }}/.config
+          # Example: cp arch/arm64/configs/spd_ulysse_defconfig ${{ env.OUT_DIR }}/.config
+          cp stock_kernel.config ${{ env.OUT_DIR }}/.config
+          # Or if it's at the root: cp YOUR_C21Y_DEFCONFIG_NAME ${{ env.OUT_DIR }}/.config
 
-          # Run olddefconfig using the generated args
-          make ${MAKE_ARGS} olddefconfig
+          # Make will use the exported variables automatically
+          make O=${{ env.OUT_DIR }} olddefconfig
 
           #─── Build kernel + DTBs + Modules ───────────────────────────────────
           echo "::group::Build Kernel, DTBs, and Modules"
-          # Use the generated ARGS string directly
-          # V=1 can be added if needed: make ${MAKE_ARGS} V=1 ...
-          make ${MAKE_ARGS} \
+          make -j$(nproc) O=${{ env.OUT_DIR }} V=1 \
                STOP_SHIP_TRACEPRINTK=1 \
                Image.gz dtbs modules
           echo "::endgroup::"
+
+          #─── Get Kernel Version String ─────────────────────────────────────────
+          KVER=$(make O=${{ env.OUT_DIR }} kernelrelease)
+          if [ -z "$KVER" ]; then
+            echo "❌ Error: Failed to determine kernel version using 'make O=${{ env.OUT_DIR }} kernelrelease'."
+            exit 1
+          fi
+          echo "Kernel version determined as: $KVER"
 
           #─── Install Modules, Run depmod, Strip Modules ───────────────────────
           echo "::group::Install, Depmod, Strip Modules"
@@ -168,46 +121,25 @@ jobs:
           rm -rf "${{ env.MODULES_STAGING_PATH }}"
           mkdir -p "${{ env.MODULES_STAGING_PATH }}"
 
-          # Install modules using the generated ARGS
-          make ${MAKE_ARGS} \
+          # Install modules (Make uses exported variables)
+          make O=${{ env.OUT_DIR }} \
                INSTALL_MOD_PATH="${{ env.MODULES_STAGING_PATH }}" \
                modules_install
 
-          # Determine Kernel Version String (best effort after install)
-          KVER=$(make ${MAKE_ARGS} kernelrelease)
-          echo "Kernel version from make: $KVER"
-          if [ -z "$KVER" ]; then
-             echo "Fallback: Trying to find KVER directory in staging path..."
-             KVER=$(ls "${{ env.MODULES_STAGING_PATH }}/lib/modules/" 2>/dev/null | head -n 1)
-          fi
+          MODULES_DIR="${{ env.MODULES_STAGING_PATH }}/lib/modules/$KVER"
 
-          if [ -z "$KVER" ]; then
-            echo "⚠️ Error: Kernel version directory not found. Cannot run depmod/strip."
-            # Decide whether to exit or just warn
-            # exit 1
-          elif [ ! -d "${{ env.MODULES_STAGING_PATH }}/lib/modules/$KVER/kernel" ] && [ -z "$(find "${{ env.MODULES_STAGING_PATH }}/lib/modules/$KVER/" -name '*.ko' 2>/dev/null)" ]; then
-             echo "⚠️ Warning: No kernel modules (.ko files) found for $KVER. Skipping depmod and strip."
+          # Check if actual module files were installed
+          if [ ! -d "$MODULES_DIR/kernel" ] && [ -z "$(find "$MODULES_DIR" -name '*.ko' 2>/dev/null)" ]; then
+            echo "⚠️ Warning: No kernel modules (.ko files) found for $KVER in $MODULES_DIR. Skipping depmod and strip."
           else
-            MODULES_DIR="${{ env.MODULES_STAGING_PATH }}/lib/modules/$KVER"
-            echo "Found kernel modules directory for $KVER: $MODULES_DIR"
-
+            echo "Found kernel modules for $KVER. Running depmod and stripping..."
             # Generate modules.dep etc.
-            echo "Running depmod for $KVER..."
-            # depmod should use the kernel version correctly. -b specifies the base directory.
+            echo "Running depmod..."
             depmod -a -b "${{ env.MODULES_STAGING_PATH }}" "$KVER"
             echo "depmod finished."
-
-            # Strip modules
-            # The STRIP=llvm-strip command is part of MAKE_ARGS. The kernel makefile should use this when building.
-            # For stripping *after* install, we need llvm-strip in the PATH, which it is.
-            # We extract the STRIP command value from the ARGS string for clarity, though just calling 'llvm-strip' should work too.
-            STRIP_CMD=$(echo "${MAKE_ARGS}" | grep -o 'STRIP="[^"]*"' | cut -d'"' -f2)
-            if [ -z "$STRIP_CMD" ]; then
-              echo "Warning: STRIP command not found in ARGS, defaulting to llvm-strip"
-              STRIP_CMD=llvm-strip
-            fi
-            echo "Stripping modules using $STRIP_CMD..."
-            find "$MODULES_DIR" -name '*.ko' -exec $STRIP_CMD --strip-unneeded {} +
+            # Strip modules using the exported STRIP variable (llvm-strip)
+            echo "Stripping modules using $STRIP..."
+            find "$MODULES_DIR" -name '*.ko' -exec $STRIP --strip-unneeded {} +
             echo "Stripping finished."
           fi
           echo "::endgroup::"
@@ -218,43 +150,40 @@ jobs:
             exit 1
           fi
           echo "✅ Kernel build and module processing successful!"
-          # Pass KVER to the next step via environment file
+          # Expose KVER for the next step
           echo "KVER=$KVER" >> $GITHUB_ENV
 
 
       - name: 📦 Prepare Artifact (Compress Modules)
         # Uses KVER from the previous step's environment output
-        env:
-          ARCH: ${{ steps.generate-args.outputs.ARCH }} # Get ARCH again for path construction
         run: |
           ARTIFACT_DIR="$GITHUB_WORKSPACE/artifact"
           mkdir -p "$ARTIFACT_DIR"
 
           # Copy Kernel Image
-          cp "${{ env.OUT_DIR }}/arch/${ARCH}/boot/Image.gz" "$ARTIFACT_DIR/"
+          # ARCH should be available if needed, but OUT_DIR is absolute
+          cp "${{ env.OUT_DIR }}/arch/arm64/boot/Image.gz" "$ARTIFACT_DIR/"
 
           # Copy DTBs
-          find "${{ env.OUT_DIR }}/arch/${ARCH}/boot/dts/" -name '*.dtb' -exec cp {} "$ARTIFACT_DIR/" \;
+          find "${{ env.OUT_DIR }}/arch/arm64/boot/dts/" -name '*.dtb' -exec cp {} "$ARTIFACT_DIR/" \;
 
           # Create compressed tarball of modules (if they exist and KVER is known)
           if [ -z "$KVER" ]; then
              echo "KVER is unknown, skipping module packaging."
           else
             MODULES_INSTALL_DIR="${{ env.MODULES_STAGING_PATH }}/lib/modules/$KVER"
+            # Check for kernel dir OR module dependency files
             if [ -d "$MODULES_INSTALL_DIR/kernel" ] || [ -n "$(find "$MODULES_INSTALL_DIR" -maxdepth 1 -name 'modules.*' 2>/dev/null)" ]; then
                echo "Modules/dep files found for kernel $KVER, creating compressed tarball artifact/modules-$KVER.tar.gz"
-               # Create the tar.gz containing the contents relative to the KVER directory
                tar czf "$ARTIFACT_DIR/modules-$KVER.tar.gz" -C "$MODULES_INSTALL_DIR" .
             else
                echo "No actual kernel modules (.ko files) or dep files found in $MODULES_INSTALL_DIR, skipping module packaging."
             fi
           fi
 
-
       - name: 📤 Upload Kernel Artifact
         uses: actions/upload-artifact@v4
         with:
           name: kernel-modules-${{ github.run_id }}
-          # Upload everything in the artifact directory (Image.gz, *.dtb, modules-*.tar.gz)
           path: ${{ github.workspace }}/artifact/*
-          if-no-files-found: error # Error if essential files are missing
+          if-no-files-found: error
