@@ -1,0 +1,110 @@
+# .github/workflows/build_kernel.yaml
+name: Build Kernel for Realme C21Y (RMX3261/RMX3263) with Custom Config + olddefconfig
+
+on:
+  workflow_dispatch:
+
+env:
+  ARCH: arm64
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📜 Checkout kernel source
+        uses: actions/checkout@v4
+        with:
+          path: kernel_source
+
+      - name: 🔧 Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ca-certificates cpio crossbuild-essential-arm64 \
+            flex git kmod libelf-dev libncurses5-dev libssl-dev \
+            lsb-release make python3 rsync wget zip unzip \
+            libyaml-dev pkg-config
+
+      - name: 📥 Download Clang Toolchain (crDroid r353983c / Clang 11.0.2)
+        run: |
+          git clone --depth=1 https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-6573524 clang
+          # Put clang/bin (with clang, clang++, ld.lld, llvm-ar, etc.) first in PATH
+          echo "${{ github.workspace }}/clang/bin" >> $GITHUB_PATH
+          clang --version
+
+      - name: 🚀 Build Kernel (no GCC anywhere)
+        working-directory: kernel_source
+        run: |
+          #─── Basic env ─────────────────────────────────────────────────────────
+          export ARCH=${{ env.ARCH }}
+          export CROSS_COMPILE="aarch64-linux-gnu-"
+          export KBUILD_BUILD_USER="GitHubActions"
+          export KBUILD_BUILD_HOST="github.com"
+
+          #─── Force LLVM for *everything* ────────────────────────────────────────
+          export PATH=${{ github.workspace }}/clang/bin:$PATH
+          export CC=clang
+          export CXX=clang++
+          export LD=ld.lld
+          export HOSTCC=clang
+          export HOSTCXX=clang++
+          export HOSTLD=ld.lld
+          export AR=llvm-ar
+          export HOSTAR=llvm-ar
+          export NM=llvm-nm
+          export HOSTNM=llvm-nm
+          export OBJCOPY=llvm-objcopy
+          export OBJDUMP=llvm-objdump
+          export STRIP=llvm-strip
+          export READELF=llvm-readelf
+          export LLVM=1
+          export LLVM_IAS=1
+
+          #─── YAML libs for dtc ──────────────────────────────────────────────────
+          export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}
+          YAML_LIBS=$(pkg-config --libs yaml-0.1 2>/dev/null || echo "-lyaml -L/usr/lib/x86_64-linux-gnu")
+          export HOST_LDFLAGS="$YAML_LIBS"
+
+          #─── Prepare output & config ───────────────────────────────────────────
+          mkdir -p out
+          cp selinux.config out/.config
+
+          #─── Update config w/ defaults ────────────────────────────────────────
+          # NOTE: STOP_SHIP_TRACEPRINTK is usually not needed for olddefconfig
+          make O=out \
+               ARCH=${ARCH} \
+               CC=${CC} CXX=${CXX} LD=${LD} HOSTCC=${HOSTCC} HOSTCXX=${HOSTCXX} HOSTLD=${HOSTLD} \
+               AR=${AR} HOSTAR=${HOSTAR} NM=${NM} HOSTNM=${HOSTNM} \
+               HOSTLDFLAGS="${HOST_LDFLAGS}" \
+               olddefconfig
+
+          #─── Build kernel + DTBs ──────────────────────────────────────────────
+          # Added STOP_SHIP_TRACEPRINTK=1 here as per the config snippet
+          make -j$(nproc) O=out V=1 \
+               ARCH=${ARCH} \
+               CC=${CC} CXX=${CXX} LD=${LD} HOSTCC=${HOSTCC} HOSTCXX=${HOSTCXX} HOSTLD=${HOSTLD} \
+               AR=${AR} HOSTAR=${HOSTAR} NM=${NM} HOSTNM=${HOSTNM} \
+               HOSTLDFLAGS="${HOST_LDFLAGS}" \
+               STOP_SHIP_TRACEPRINTK=1 \
+               Image.gz dtbs
+
+          #─── Verify success ────────────────────────────────────────────────────
+          if [ ! -f out/arch/${ARCH}/boot/Image.gz ]; then
+            echo "❌ Build failed: out/arch/${ARCH}/boot/Image.gz not found."
+            exit 1
+          fi
+          echo "✅ Kernel build successful!"
+
+      - name: 📦 Prepare Artifact
+        run: |
+          mkdir -p $GITHUB_WORKSPACE/artifact
+          cp kernel_source/out/arch/${{ env.ARCH }}/boot/Image.gz $GITHUB_WORKSPACE/artifact/
+          find kernel_source/out/arch/${{ env.ARCH }}/boot/dts/ -name '*.dtb' -exec cp {} $GITHUB_WORKSPACE/artifact/ \;
+
+      - name: 📤 Upload Kernel Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ github.run_id }}
+          path: ${{ github.workspace }}/artifact/*
+          if-no-files-found: error
