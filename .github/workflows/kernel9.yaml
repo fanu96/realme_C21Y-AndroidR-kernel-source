@@ -95,7 +95,7 @@ jobs:
           #─── YAML libs for dtc (still needed with HOSTCC=clang) ──────────────
           export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}
           YAML_LIBS=$(pkg-config --libs yaml-0.1 2>/dev/null || echo "-lyaml -L/usr/lib/x86_64-linux-gnu")
-          export HOST_LDFLAGS="$YAML_LIBS"
+          export HOSTLDFLAGS="$YAML_LIBS"
 
           #─── Prepare output & config ───────────────────────────────────────────
           mkdir -p ${{ env.OUT_DIR }}
