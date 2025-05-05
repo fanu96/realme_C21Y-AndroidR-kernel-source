@@ -49,7 +49,7 @@ jobs:
           echo "${{ github.workspace }}/arm-gcc/bin" >> $GITHUB_PATH
           echo "GCC ARM PATH added to GITHUB_PATH"
 
-      # --- Build Step using Exported Environment ---
+            # --- Build Step using Exported Environment ---
       - name: 🚀 Build Kernel + Modules & Install
         working-directory: kernel_source
         run: |
@@ -61,15 +61,22 @@ jobs:
           which arm-linux-androideabi-gcc || echo "WARNING: arm-linux-androideabi-gcc not found"
           which ld.lld || echo "WARNING: ld.lld not found"
           which llvm-ar || echo "WARNING: llvm-ar not found"
+          which llvm-nm || echo "WARNING: llvm-nm not found" # Added verification
           echo "--------------------------"
 
-          #─── Set Build Environment Variables (Exactly as provided) ────────────
+          #─── Set Build Environment Variables (More Explicit Host Tools) ────
           # PATH is already set via GITHUB_PATH in previous steps
           export ARCH="arm64"
+          export KBUILD_BUILD_USER="fanu"
+          export KBUILD_BUILD_HOST="github.com"
+
+          # Explicitly tell Kbuild to use LLVM toolchain
+          export LLVM=1
+          export LLVM_IAS=1
+
+          # Target Toolchain (Cross-compilation)
           export CC="clang"
-          export CLANG_TRIPLE="aarch64-linux-gnu-" # Note: Value changed to match Clang standard
-          export CROSS_COMPILE="aarch64-linux-android-"
-          export CROSS_COMPILE_ARM32="arm-linux-androideabi-"
+          export CXX="clang++" # Added for completeness
           export LD="ld.lld"
           export AR="llvm-ar"
           export NM="llvm-nm"
@@ -78,31 +85,36 @@ jobs:
           export READELF="llvm-readelf"
           export OBJSIZE="llvm-size"
           export STRIP="llvm-strip"
-          export LDGOLD="aarch64-linux-gnu-ld.gold" # Usually not needed when LD=ld.lld, but keeping as requested
-          export LLVM_AR="llvm-ar"
+          export CROSS_COMPILE="aarch64-linux-android-"
+          export CROSS_COMPILE_ARM32="arm-linux-androideabi-"
+          export CLANG_TRIPLE="aarch64-linux-gnu-"
+
+          # Host Toolchain (For building build-time tools like dtc)
+          export HOSTCC="clang"
+          export HOSTCXX="clang++"
+          export HOSTLD="ld.lld"
+          export HOSTAR="llvm-ar"
+          export HOSTNM="llvm-nm"            # <<< Explicitly added
+          export HOSTOBJCOPY="llvm-objcopy"  # <<< Explicitly added
+          export HOSTOBJDUMP="llvm-objdump"  # <<< Explicitly added
+          export HOSTSTRIP="llvm-strip"      # <<< Explicitly added
+          export HOSTREADELF="llvm-readelf"  # <<< Explicitly added
+
+          # Other variables from your list
+          export LDGOLD="aarch64-linux-gnu-ld.gold" # Still seems unnecessary with HOSTLD=ld.lld, but keeping it
+          export LLVM_AR="llvm-ar"                 # Redundant with AR=llvm-ar and HOSTAR=llvm-ar, but keep if needed
           export LLVM_DIS="llvm-dis"
           export BSP_BUILD_ANDROID_OS="y"
           export BSP_BUILD_FAMILY="qogirl6"
-          export KBUILD_BUILD_USER="fanu" # Good practice
-          export KBUILD_BUILD_HOST="github.com"
-          export LLVM=1
-          export LLVM_IAS=1 
-          export HOSTCC="clang"
-          export HOSTCXX="clang++"
-          export HOSTLD="ld.lld" 
-          export HOSTAR="llvm-ar"
 
-          #─── YAML libs for dtc (still needed with HOSTCC=clang) ──────────────
-          export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}
+          #─── YAML libs for dtc ──────────────────────────────────────────────
+          export PKG_CONFIG_PATH=/usr/lib/xx86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}
           YAML_LIBS=$(pkg-config --libs yaml-0.1 2>/dev/null || echo "-lyaml -L/usr/lib/x86_64-linux-gnu")
-          export HOSTLDFLAGS="$YAML_LIBS"
+          export HOST_LDFLAGS="$YAML_LIBS" # <<< Using HOST_LDFLAGS (with underscore) matching your examples
 
           #─── Prepare output & config ───────────────────────────────────────────
           mkdir -p ${{ env.OUT_DIR }}
-          # IMPORTANT: Replace 'YOUR_C21Y_DEFCONFIG_NAME' with your actual defconfig file name
-          # Example: cp arch/arm64/configs/spd_ulysse_defconfig ${{ env.OUT_DIR }}/.config
           cp stock_kernel.config ${{ env.OUT_DIR }}/.config
-          # Or if it's at the root: cp YOUR_C21Y_DEFCONFIG_NAME ${{ env.OUT_DIR }}/.config
 
           # Make will use the exported variables automatically
           make O=${{ env.OUT_DIR }} olddefconfig
@@ -114,6 +126,9 @@ jobs:
                Image.gz dtbs modules
           echo "::endgroup::"
 
+          # ... (Rest of the script: KVER, modules_install, depmod, strip, verify, etc.) ...
+          # These parts should remain the same
+
           #─── Get Kernel Version String ─────────────────────────────────────────
           KVER=$(make O=${{ env.OUT_DIR }} kernelrelease)
           if [ -z "$KVER" ]; then
@@ -124,27 +139,19 @@ jobs:
 
           #─── Install Modules, Run depmod, Strip Modules ───────────────────────
           echo "::group::Install, Depmod, Strip Modules"
-          # Clean previous staging area
           rm -rf "${{ env.MODULES_STAGING_PATH }}"
           mkdir -p "${{ env.MODULES_STAGING_PATH }}"
-
-          # Install modules (Make uses exported variables)
           make O=${{ env.OUT_DIR }} \
                INSTALL_MOD_PATH="${{ env.MODULES_STAGING_PATH }}" \
                modules_install
-
           MODULES_DIR="${{ env.MODULES_STAGING_PATH }}/lib/modules/$KVER"
-
-          # Check if actual module files were installed
           if [ ! -d "$MODULES_DIR/kernel" ] && [ -z "$(find "$MODULES_DIR" -name '*.ko' 2>/dev/null)" ]; then
             echo "⚠️ Warning: No kernel modules (.ko files) found for $KVER in $MODULES_DIR. Skipping depmod and strip."
           else
             echo "Found kernel modules for $KVER. Running depmod and stripping..."
-            # Generate modules.dep etc.
             echo "Running depmod..."
             depmod -a -b "${{ env.MODULES_STAGING_PATH }}" "$KVER"
             echo "depmod finished."
-            # Strip modules using the exported STRIP variable (llvm-strip)
             echo "Stripping modules using $STRIP..."
             find "$MODULES_DIR" -name '*.ko' -exec $STRIP --strip-unneeded {} +
             echo "Stripping finished."
@@ -157,40 +164,4 @@ jobs:
             exit 1
           fi
           echo "✅ Kernel build and module processing successful!"
-          # Expose KVER for the next step
           echo "KVER=$KVER" >> $GITHUB_ENV
-
-
-      - name: 📦 Prepare Artifact (Compress Modules)
-        # Uses KVER from the previous step's environment output
-        run: |
-          ARTIFACT_DIR="$GITHUB_WORKSPACE/artifact"
-          mkdir -p "$ARTIFACT_DIR"
-
-          # Copy Kernel Image
-          # ARCH should be available if needed, but OUT_DIR is absolute
-          cp "${{ env.OUT_DIR }}/arch/arm64/boot/Image.gz" "$ARTIFACT_DIR/"
-
-          # Copy DTBs
-          find "${{ env.OUT_DIR }}/arch/arm64/boot/dts/" -name '*.dtb' -exec cp {} "$ARTIFACT_DIR/" \;
-
-          # Create compressed tarball of modules (if they exist and KVER is known)
-          if [ -z "$KVER" ]; then
-             echo "KVER is unknown, skipping module packaging."
-          else
-            MODULES_INSTALL_DIR="${{ env.MODULES_STAGING_PATH }}/lib/modules/$KVER"
-            # Check for kernel dir OR module dependency files
-            if [ -d "$MODULES_INSTALL_DIR/kernel" ] || [ -n "$(find "$MODULES_INSTALL_DIR" -maxdepth 1 -name 'modules.*' 2>/dev/null)" ]; then
-               echo "Modules/dep files found for kernel $KVER, creating compressed tarball artifact/modules-$KVER.tar.gz"
-               tar czf "$ARTIFACT_DIR/modules-$KVER.tar.gz" -C "$MODULES_INSTALL_DIR" .
-            else
-               echo "No actual kernel modules (.ko files) or dep files found in $MODULES_INSTALL_DIR, skipping module packaging."
-            fi
-          fi
-
-      - name: 📤 Upload Kernel Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: kernel-modules-${{ github.run_id }}
-          path: ${{ github.workspace }}/artifact/*
-          if-no-files-found: error
