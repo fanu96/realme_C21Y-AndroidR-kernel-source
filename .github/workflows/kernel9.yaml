@@ -84,7 +84,13 @@ jobs:
           export BSP_BUILD_ANDROID_OS="y"
           export BSP_BUILD_FAMILY="qogirl6"
           export KBUILD_BUILD_USER="fanu" # Good practice
-          export KBUILD_BUILD_HOST="github.com"    # Good practice
+          export KBUILD_BUILD_HOST="github.com"
+          export LLVM=1
+          export LLVM_IAS=1 
+          export HOSTCC="clang"
+          export HOSTCXX="clang++"
+          export HOSTLD="ld.lld" 
+          export HOSTAR="llvm-ar"
 
           #─── YAML libs for dtc (still needed with HOSTCC=clang) ──────────────
           export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}
