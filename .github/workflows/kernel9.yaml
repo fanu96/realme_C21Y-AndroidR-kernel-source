@@ -86,8 +86,8 @@ jobs:
           # These explicitly tell the build system which compilers/tools to use
           export ARCH="arm64"
           export CC="clang"
-          export CLANG_TRIPLE="aarch64-linux-gnu-"
-          export CROSS_COMPILE="aarch64-linux-gnu-"
+          export CLANG_TRIPLE="aarch64-linux-android-"
+          export CROSS_COMPILE="aarch64-linux-android-"
           export CROSS_COMPILE_ARM32="arm-linux-androideabi-"
           export LD="ld.lld"
           export AR="llvm-ar"
