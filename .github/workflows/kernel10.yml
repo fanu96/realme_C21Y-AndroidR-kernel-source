@@ -9,7 +9,7 @@ env:
   ARTIFACT_DIR: ${{ github.workspace }}/artifact
 
   # Toolchain repos & refs
-  CLANG_REPO: https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-r377782b # Changed for Clang 10.0
+  CLANG_REPO: https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-6573524 # Changed for Clang 10.0
   CLANG_REF: '10.0' # Changed for Clang 10.0 (branch name in the new repo)
   GCC_AARCH64_REPO: https://github.com/rifsxd/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9
   GCC_AARCH64_REF: lineage-19.1
