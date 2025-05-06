@@ -97,7 +97,7 @@ jobs:
           export READELF="llvm-readelf"
           export OBJSIZE="llvm-size"
           export STRIP="llvm-strip"
-          # export LDGOLD="aarch64-linux-gnu-ld.gold" # Often unused when LD=ld.lld is set, but kept if needed
+          export LDGOLD="aarch64-linux-gnu-ld.gold"
           export BSP_BUILD_ANDROID_OS="y"
           export BSP_BUILD_FAMILY="qogirl6"
           export LLVM_AR="llvm-ar" # Some kernels might use LLVM_AR instead of AR
