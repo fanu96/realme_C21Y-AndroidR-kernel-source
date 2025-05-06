@@ -48,87 +48,107 @@ jobs:
           ls -l ${{ github.workspace }}/gcc-arm/bin/arm-linux-androideabi-gcc
       # <<< NEW STEP END >>>
 
-      - name: 🚀 Build Kernel + Modules & Install
+            - name: 🚀 Build Kernel + Modules & Install
         working-directory: kernel_source
         run: |
           #─── Basic env (Updated) ───────────────────────────────────────────────
-          export ARCH="arm64" # Explicitly set ARCH here
-          export CROSS_COMPILE="aarch64-linux-android-" # Updated
-          export CROSS_COMPILE_ARM32="arm-linux-androideabi-" # Added
-          export KBUILD_BUILD_USER="GitHubActions"
-          export KBUILD_BUILD_HOST="github.com"
+          export ARCH="arm64"
+          export CLANG_TRIPLE="aarch64-linux-android-"
+          export CROSS_COMPILE="aarch64-linux-android-"
+          export CROSS_COMPILE_ARM32="arm-linux-androideabi-"
+          export KBUILD_BUILD_USER="GitHubActions" # Exported value might have spaces
+          export KBUILD_BUILD_HOST="github.com"    # Exported value might have spaces
 
           #─── Force LLVM for *everything* (Updated) ─────────────────────────────
-          export PATH=${{ github.workspace }}/clang/bin:${{ github.workspace }}/gcc-aarch64/bin:${{ github.workspace }}/gcc-arm/bin:$PATH # Ensure Clang is first if needed, though explicit CC overrides PATH lookup for compiler
-          export CC="clang" # Already set
-          export CXX=clang++ # Already set
-          export LD="ld.lld" # Already set
-          export HOSTCC=clang HOSTCXX=clang++ HOSTLD=ld.lld # Already set
-          export AR="llvm-ar" HOSTAR=llvm-ar # Already set
-          export NM="llvm-nm" HOSTNM=llvm-nm # Already set
-          export OBJCOPY="llvm-objcopy" OBJDUMP="llvm-objdump" # Already set
-          export READELF="llvm-readelf" STRIP="llvm-strip" # Already set
-          export OBJSIZE="llvm-size" # Added previously
-          export LLVM_AR="llvm-ar" LLVM_NM="llvm-nm" # Use consistent naming if Kbuild prefers LLVM_NM
-          export LLVM_DIS="llvm-dis" # Added previously
-          export CLANG_TRIPLE="aarch64-linux-android-" # Added
-          export LLVM=1 LLVM_IAS=1 # Already set
-
-          # Note: LDGOLD might not be necessary or used when LD=ld.lld, but updating prefix for consistency
-          export LDGOLD="aarch64-linux-android-ld.gold" # Updated prefix
+          # Add toolchains to PATH
+          export PATH=${{ github.workspace }}/clang/bin:${{ github.workspace }}/gcc-aarch64/bin:${{ github.workspace }}/gcc-arm/bin:$PATH
+          # Set main LLVM tools via environment variables
+          export CC="clang" LD="ld.lld"
+          export AR="llvm-ar"
+          export NM="llvm-nm"
+          export OBJCOPY="llvm-objcopy" OBJDUMP="llvm-objdump"
+          export READELF="llvm-readelf" STRIP="llvm-strip"
+          export OBJSIZE="llvm-size"
+          export LLVM_AR="llvm-ar" LLVM_DIS="llvm-dis"
+          export LDGOLD="aarch64-linux-android-ld.gold" # Usually not needed with LD=ld.lld
 
           #─── YAML libs for dtc ──────────────────────────────────────────────────
-          export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}
-          YAML_LIBS=$(pkg-config --libs yaml-0.1 2>/dev/null || echo "-lyaml -L/usr/lib/x86_64-linux-gnu")
-          export HOST_LDFLAGS="$YAML_LIBS"
+          
 
           #─── Custom BSP Flags ───────────────────────────────────────────────────
-          export BSP_BUILD_ANDROID_OS="y" # Added previously
-          export BSP_BUILD_FAMILY="qogirl6" # Added previously
+          export BSP_BUILD_ANDROID_OS="y"
+          export BSP_BUILD_FAMILY="qogirl6"
 
           #─── Prepare output & config ───────────────────────────────────────────
           mkdir -p out
-          # Ensure stock_kernel.config exists in kernel_source directory
           if [ ! -f stock_kernel.config ]; then
             echo "❌ Error: stock_kernel.config not found in kernel_source directory."
             exit 1
           fi
           cp stock_kernel.config out/.config
 
-          # Pass relevant variables directly to make (preferred over exporting everything if possible)
-          MAKE_ARGS="O=out \
-                     ARCH=${ARCH} \
-                     CROSS_COMPILE=${CROSS_COMPILE} \
-                     CROSS_COMPILE_ARM32=${CROSS_COMPILE_ARM32} \
-                     CC=${CC} CXX=${CXX} LD=${LD} \
-                     HOSTCC=${HOSTCC} HOSTCXX=${HOSTCXX} HOSTLD=${HOSTLD} \
-                     AR=${AR} HOSTAR=${HOSTAR} NM=${NM} HOSTNM=${HOSTNM} \
-                     OBJCOPY=${OBJCOPY} OBJDUMP=${OBJDUMP} READELF=${READELF} STRIP=${STRIP} \
-                     OBJSIZE=${OBJSIZE} LLVM_AR=${LLVM_AR} LLVM_NM=${LLVM_NM} LLVM_DIS=${LLVM_DIS} \
-                     CLANG_TRIPLE=${CLANG_TRIPLE} \
-                     LLVM=1 LLVM_IAS=1 \
-                     HOSTLDFLAGS=\"${HOST_LDFLAGS}\" \
-                     KBUILD_BUILD_USER=\"${KBUILD_BUILD_USER}\" KBUILD_BUILD_HOST=\"${KBUILD_BUILD_HOST}\" \
-                     BSP_BUILD_ANDROID_OS=${BSP_BUILD_ANDROID_OS} BSP_BUILD_FAMILY=${BSP_BUILD_FAMILY}"
-
-          make $MAKE_ARGS olddefconfig
+          # Call make, passing necessary variables directly. Make inherits exported ones.
+          # Quote variables passed directly *if* their values might contain spaces.
+          make O=out \
+               ARCH=${ARCH} \
+               CLANG_TRIPLE=${CLANG_TRIPLE} \
+               CROSS_COMPILE=${CROSS_COMPILE} \
+               CROSS_COMPILE_ARM32=${CROSS_COMPILE_ARM32} \
+               CC=${CC} \
+               LD=${LD} \
+               AR=${AR} \
+               NM=${NM} \
+               OBJCOPY=${OBJCOPY} \
+               STRIP=${STRIP} \
+               KBUILD_BUILD_USER="${KBUILD_BUILD_USER}" \
+               KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST}" \
+               BSP_BUILD_ANDROID_OS=${BSP_BUILD_ANDROID_OS} \
+               BSP_BUILD_FAMILY=${BSP_BUILD_FAMILY} \
+               olddefconfig
 
           #─── Build kernel + DTBs + Modules ───────────────────────────────────
           echo "::group::Build Kernel, DTBs, and Modules"
-          make -j$(nproc) $MAKE_ARGS V=1 \
-               STOP_SHIP_TRACEPRINTK=1 \
+          make O=out -j$(nproc) V=1 \
+               ARCH=${ARCH} \
+               CLANG_TRIPLE=${CLANG_TRIPLE} \
+               CROSS_COMPILE=${CROSS_COMPILE} \
+               CROSS_COMPILE_ARM32=${CROSS_COMPILE_ARM32} \
+               CC=${CC} \
+               LD=${LD} \
+               AR=${AR} \
+               NM=${NM} \
+               OBJCOPY=${OBJCOPY} \
+               STRIP=${STRIP} \
+               KBUILD_BUILD_USER="${KBUILD_BUILD_USER}" \
+               KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST}" \
+               BSP_BUILD_ANDROID_OS=${BSP_BUILD_ANDROID_OS} \
+               BSP_BUILD_FAMILY=${BSP_BUILD_FAMILY} \
                Image.gz dtbs modules
           echo "::endgroup::"
 
           #─── Install Modules, Run depmod, Strip Modules ───────────────────────
           echo "::group::Install, Depmod, Strip Modules"
-          # Clean previous staging area
           rm -rf "${{ env.MODULES_STAGING_PATH }}"
           mkdir -p "${{ env.MODULES_STAGING_PATH }}"
-          # Install modules
-          make $MAKE_ARGS \
+          # Pass INSTALL_MOD_PATH directly to modules_install target
+          make O=out \
+               ARCH=${ARCH} \
+               CLANG_TRIPLE=${CLANG_TRIPLE} \
+               CROSS_COMPILE=${CROSS_COMPILE} \
+               CROSS_COMPILE_ARM32=${CROSS_COMPILE_ARM32} \
+               CC=${CC} \
+               LD=${LD} \
+               AR=${AR} \
+               NM=${NM} \
+               OBJCOPY=${OBJCOPY} \
+               STRIP=${STRIP} \
+               KBUILD_BUILD_USER="${KBUILD_BUILD_USER}" \
+               KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST}" \
+               BSP_BUILD_ANDROID_OS=${BSP_BUILD_ANDROID_OS} \
+               BSP_BUILD_FAMILY=${BSP_BUILD_FAMILY} \
                INSTALL_MOD_PATH="${{ env.MODULES_STAGING_PATH }}" \
                modules_install
+
           # Find kernel version string
           KVER=$(ls "${{ env.MODULES_STAGING_PATH }}/lib/modules/" 2>/dev/null || echo "")
           if [ -z "$KVER" ]; then
@@ -140,12 +160,10 @@ jobs:
             echo "Found kernel version: $KVER"
             # Generate modules.dep etc.
             echo "Running depmod..."
-            # Use depmod from kmod package
             depmod -a -b "${{ env.MODULES_STAGING_PATH }}" "$KVER"
             echo "depmod finished."
             # Strip modules
             echo "Stripping modules..."
-            # Use llvm-strip since we forced LLVM toolchain
             find "$MODULES_DIR" -name '*.ko' -exec ${STRIP} --strip-unneeded {} +
             echo "Stripping finished."
           fi
