@@ -112,6 +112,7 @@ jobs:
         run: |
           export ARCH=arm64
           export CC=clang
+          export CLANG_TRIPLE=aarch64-linux-gnu-
           export CROSS_COMPILE=aarch64-linux-android-
           export CROSS_COMPILE_ARM32=arm-linux-androideabi-
           export LD=ld.lld
@@ -121,11 +122,13 @@ jobs:
           export OBJDUMP=llvm-objdump
           export READELF=llvm-readelf
           export STRIP=llvm-strip
+          export LDGOLD="aarch64-linux-gnu-ld.gold"
           export BSP_BUILD_ANDROID_OS=y
           export BSP_BUILD_FAMILY=qogirl6
           export LLVM_AR=llvm-ar
           export LLVM_NM=llvm-nm
           export LLVM_DIS=llvm-dis
+          export HOSTLD=ld.lld
           export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}
           YAML_LIBS=$(pkg-config --libs yaml-0.1 2>/dev/null || echo "-lyaml -L/usr/lib/x86_64-linux-gnu")
           export HOST_LDFLAGS="$YAML_LIBS"
@@ -133,27 +136,27 @@ jobs:
           mkdir -p out
           cp stock_kernel.config out/.config
           make O=out ARCH=${ARCH} CC=${CC} \
-               CROSS_COMPILE=${CROSS_COMPILE} CROSS_COMPILE_ARM32=${CROSS_COMPILE_ARM32} \
+               CROSS_COMPILE=${CROSS_COMPILE} CLANG_TRIPLE =$(CLANG_TRIPLE) CROSS_COMPILE_ARM32=${CROSS_COMPILE_ARM32} \
                LD=${LD} AR=${AR} NM=${NM} OBJCOPY=${OBJCOPY} OBJDUMP=${OBJDUMP} \
                READELF=${READELF} STRIP=${STRIP} BSP_BUILD_ANDROID_OS=${BSP_BUILD_ANDROID_OS} \
-               BSP_BUILD_FAMILY=${BSP_BUILD_FAMILY} HOSTLDFLAGS="${HOST_LDFLAGS}" \
+               BSP_BUILD_FAMILY=${BSP_BUILD_FAMILY} HOSTLD=${HOSTLD} HOSTLDFLAGS="${HOST_LDFLAGS}" \
                olddefconfig
 
           make O=out -j$(nproc) V=1 ARCH=${ARCH} CC=${CC}\
-               CROSS_COMPILE=${CROSS_COMPILE} CROSS_COMPILE_ARM32=${CROSS_COMPILE_ARM32} \
+               CROSS_COMPILE=${CROSS_COMPILE} CLANG_TRIPLE =$(CLANG_TRIPLE) CROSS_COMPILE_ARM32=${CROSS_COMPILE_ARM32} \
                LD=${LD} AR=${AR} NM=${NM} OBJCOPY=${OBJCOPY} OBJDUMP=${OBJDUMP} \
                READELF=${READELF} STRIP=${STRIP} BSP_BUILD_ANDROID_OS=${BSP_BUILD_ANDROID_OS} \
-               BSP_BUILD_FAMILY=${BSP_BUILD_FAMILY} HOST_LDFLAGS="${HOST_LDFLAGS}" \
+               BSP_BUILD_FAMILY=${BSP_BUILD_FAMILY} HOSTLD=${HOSTLD} HOST_LDFLAGS="${HOST_LDFLAGS}" \
                Image.gz dtbs modules
 
           # modules_install
           rm -rf "${MODULES_STAGING_PATH}"
           make O=out ARCH=${ARCH} INSTALL_MOD_PATH="${MODULES_STAGING_PATH}" \
-               CC=${CC} CROSS_COMPILE=${CROSS_COMPILE} \
+               CC=${CC} CLANG_TRIPLE =$(CLANG_TRIPLE) CROSS_COMPILE=${CROSS_COMPILE} \
                CROSS_COMPILE_ARM32=${CROSS_COMPILE_ARM32} LD=${LD} AR=${AR} \
                NM=${NM} OBJCOPY=${OBJCOPY} OBJDUMP=${OBJDUMP} READELF=${READELF} \
                STRIP=${STRIP} BSP_BUILD_ANDROID_OS=${BSP_BUILD_ANDROID_OS} \
-               BSP_BUILD_FAMILY=${BSP_BUILD_FAMILY} HOST_LDFLAGS="${HOST_LDFLAGS}" \
+               BSP_BUILD_FAMILY=${BSP_BUILD_FAMILY} HOSTLD=${HOSTLD} HOST_LDFLAGS="${HOST_LDFLAGS}" \
                modules_install
 
           # detect and strip modules
