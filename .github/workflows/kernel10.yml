@@ -10,7 +10,6 @@ env:
 
   # Toolchain repos & refs
   CLANG_REPO: https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-6573524
-  CLANG_REF: 10.0
   GCC_AARCH64_REPO: https://github.com/rifsxd/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9
   GCC_AARCH64_REF: lineage-19.1
   GCC_ARM_REPO: https://github.com/rifsxd/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9
