@@ -1,7 +1,7 @@
 name: Build Kernel & Modules (Stripped & Compressed) for Realme C21Y
 
 on:
-  workflow_dispatch:  # manual trigger
+  workflow_dispatch:
 
 env:
   KERNEL_ARCH: arm64
@@ -26,15 +26,13 @@ jobs:
         with:
           path: kernel_source
 
-      # ─── CACHING ─────────────────────────────────────────────────────────────
-
       - name: ⚡ Cache Clang Toolchain
         id: cache-clang
         uses: actions/cache@v3
         with:
           path: clang
           key: clang-${{ env.CLANG_REF }}
-      
+
       - name: ⚡ Cache GCC AArch64 Toolchain
         id: cache-gcc-aarch64
         uses: actions/cache@v3
@@ -59,8 +57,6 @@ jobs:
             build-${{ hashFiles('kernel_source/stock_kernel.config') }}-
             build-
 
-      # ─── DEPENDENCIES ─────────────────────────────────────────────────────────
-
       - name: 🔧 Install Build Dependencies
         run: |
           sudo apt-get update -q
@@ -70,8 +66,6 @@ jobs:
             flex git kmod libelf-dev libncurses5-dev libssl-dev \
             lsb-release make python3 rsync wget zip unzip \
             libyaml-dev
-
-      # ─── TOOLCHAIN DOWNLOAD ────────────────────────────────────────────────────
 
       - name: 📥 Download Clang Toolchain
         if: steps.cache-clang.outputs.cache-hit != 'true'
@@ -89,15 +83,12 @@ jobs:
 
       - name: 🔍 Verify Toolchains in PATH
         run: |
-          echo "PATH=$PATH"
-          which clang            || echo "ERROR: clang not found" && exit 1
-          which aarch64-linux-android-gcc || echo "ERROR: aarch64 gcc not found" && exit 1
-          which arm-linux-androideabi-gcc  || echo "ERROR: arm32 gcc not found" && exit 1
+          which clang            || { echo "ERROR: clang not found"; exit 1; }
+          which aarch64-linux-android-gcc || { echo "ERROR: aarch64 gcc not found"; exit 1; }
+          which arm-linux-androideabi-gcc  || { echo "ERROR: arm32 gcc not found"; exit 1; }
           clang --version
           aarch64-linux-android-gcc --version
           arm-linux-androideabi-gcc --version
-
-      # ─── BUILD ────────────────────────────────────────────────────────────────
 
       - name: 🚀 Build Kernel + Modules & Install
         id: build_step
@@ -130,7 +121,7 @@ jobs:
                CROSS_COMPILE=${CROSS_COMPILE} CROSS_COMPILE_ARM32=${CROSS_COMPILE_ARM32} \
                LD=${LD} AR=${AR} NM=${NM} OBJCOPY=${OBJCOPY} OBJDUMP=${OBJDUMP} \
                READELF=${READELF} STRIP=${STRIP} BSP_BUILD_ANDROID_OS=${BSP_BUILD_ANDROID_OS} \
-               BSP_BUILD_FAMILY=${BSP_BUILD_FAMILY} HOSTLDFLAGS="${HOST_LDFLAGS}" \
+               BSP_BUILD_FAMILY=${BSP_BUILD_FAMILY} HOST_LDFLAGS="${HOST_LDFLAGS}" \
                olddefconfig
 
           make O=out -j$(nproc) V=1 ARCH=${ARCH} CC=${CC} CLANG_TRIPLE=${CLANG_TRIPLE} \
@@ -140,7 +131,6 @@ jobs:
                BSP_BUILD_FAMILY=${BSP_BUILD_FAMILY} HOST_LDFLAGS="${HOST_LDFLAGS}" \
                Image.gz dtbs modules
 
-          # modules_install
           rm -rf "${MODULES_STAGING_PATH}"
           make O=out ARCH=${ARCH} INSTALL_MOD_PATH="${MODULES_STAGING_PATH}" \
                CC=${CC} CLANG_TRIPLE=${CLANG_TRIPLE} CROSS_COMPILE=${CROSS_COMPILE} \
@@ -150,7 +140,6 @@ jobs:
                BSP_BUILD_FAMILY=${BSP_BUILD_FAMILY} HOST_LDFLAGS="${HOST_LDFLAGS}" \
                modules_install
 
-          # detect and strip modules
           KVER_DIR=$(find "${MODULES_STAGING_PATH}/lib/modules/" -mindepth 1 -maxdepth 1 -type d | head -n1)
           KVER=$(basename "${KVER_DIR}")
           if [ -d "$KVER_DIR/kernel" ] && [ -n "$(find "$KVER_DIR/kernel" -name '*.ko' -print -quit)" ]; then
@@ -158,13 +147,10 @@ jobs:
             find "$KVER_DIR/kernel" -name '*.ko' -exec ${STRIP} --strip-unneeded {} +
           fi
 
-          # final check
           IMAGE=out/arch/${ARCH}/boot/Image.gz
           [ -f "$IMAGE" ] || { echo "❌ $IMAGE missing"; exit 1; }
 
           echo "kernel_version=$KVER" >> $GITHUB_OUTPUT
-
-      # ─── ARTIFACTS ────────────────────────────────────────────────────────────
 
       - name: 📦 Prepare Artifacts
         id: prep_artifacts
@@ -175,14 +161,14 @@ jobs:
           find kernel_source/out/arch/${KERNEL_ARCH}/boot/dts -name '*.dtb' -exec cp --parents {} $ARTIFACT_DIR/dtbs/ \;
           if [ -n "${{ steps.build_step.outputs.kernel_version }}" ]; then
             tar czf $ARTIFACT_DIR/modules-${{ steps.build_step.outputs.kernel_version }}.tar.gz \
-               -C $MODULES_STAGING_PATH lib/modules/${{ steps.build_step.outputs.kernel_version }}
+              -C $MODULES_STAGING_PATH lib/modules/${{ steps.build_step.outputs.kernel_version }}
           fi
 
       - name: 📤 Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: kernel-${{ env.KERNEL_ARCH }}-modules-${{ github.run_id }}
-          path:
-            - ${{ env.ARTIFACT_DIR }}/Image.gz
-            - ${{ env.ARTIFACT_DIR }}/dtbs/**
-            - ${{ env.ARTIFACT_DIR }}/modules-*.tar.gz
+          path: |
+            ${{ env.ARTIFACT_DIR }}/Image.gz
+            ${{ env.ARTIFACT_DIR }}/dtbs/**
+            ${{ env.ARTIFACT_DIR }}/modules-*.tar.gz
