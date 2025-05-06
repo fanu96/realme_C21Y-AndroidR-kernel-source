@@ -6,7 +6,7 @@ on:
 
 env:
   # Define ARCH globally for reference and consistency
-  KERNEL_ARCH: arm64
+  KERNEL_ARCH: arm64 # Matches ARCH used in the build step
   # Define the staging path for modules globally
   MODULES_STAGING_PATH: ${{ github.workspace }}/modules_staging
   # Define artifact directory globally
@@ -58,54 +58,56 @@ jobs:
           echo "${{ github.workspace }}/gcc-arm/bin" >> $GITHUB_PATH
 
           echo "GCC Toolchains setup complete."
-          echo "Verifying GCC presence (optional):"
-          ls -ld ${{ github.workspace }}/gcc-aarch64/bin/aarch64-linux-android-gcc || echo "aarch64 GCC not found."
-          ls -ld ${{ github.workspace }}/gcc-arm/bin/arm-linux-androideabi-gcc || echo "arm GCC not found."
           echo "--- Final Toolchain PATH ---"
-          echo $PATH
+          # Order matters: Clang first, then GCCs, then system PATH
+          echo "${{ github.workspace }}/clang/bin:${{ github.workspace }}/gcc-aarch64/bin:${{ github.workspace }}/gcc-arm/bin:$PATH" > $GITHUB_WORKSPACE/new_path
+          cat $GITHUB_WORKSPACE/new_path >> $GITHUB_PATH
+          echo "Updated PATH: $(cat $GITHUB_PATH)"
           echo "--------------------------"
+          # Verification
+          echo "which clang: $(which clang)"
+          echo "which ld.lld: $(which ld.lld)"
+          echo "which aarch64-linux-android-gcc: $(which aarch64-linux-android-gcc)"
+          echo "which arm-linux-androideabi-gcc: $(which arm-linux-androideabi-gcc)"
 
       - name: 🚀 Build Kernel + Modules & Install
-        id: build_step # Give step an ID to potentially reference outputs
+        id: build_step
         working-directory: kernel_source
         run: |
-          # --- Build Environment Variables ---
-          # Using K_ prefix for clarity within this script's scope
-          export K_ARCH="${{ env.KERNEL_ARCH }}"
-          export K_CLANG_TRIPLE="aarch64-linux-android-"
-          export K_CROSS_COMPILE="aarch64-linux-android-"
-          export K_CROSS_COMPILE_ARM32="arm-linux-androideabi-"
-          export K_BUILD_USER="GitHubActions"
-          export K_BUILD_HOST="github.com"
-          # BSP Specific Flags
-          export K_BSP_BUILD_ANDROID_OS="y"
-          export K_BSP_BUILD_FAMILY="qogirl6"
-
-          # LLVM/Clang tool overrides
-          export K_CC="clang"
-          export K_LD="ld.lld"
-          export K_AR="llvm-ar"
-          export K_NM="llvm-nm"
-          export K_OBJCOPY="llvm-objcopy"
-          export K_OBJDUMP="llvm-objdump"
-          export K_READELF="llvm-readelf"
-          export K_STRIP="llvm-strip"
-          export K_OBJSIZE="llvm-size"
-
-          # Combine common make parameters
-          export K_MAKE_PARAMS_BASE="O=out ARCH=${K_ARCH} CLANG_TRIPLE=${K_CLANG_TRIPLE} CROSS_COMPILE=${K_CROSS_COMPILE} CROSS_COMPILE_ARM32=${K_CROSS_COMPILE_ARM32}"
-          export K_MAKE_PARAMS_LLVM="${K_MAKE_PARAMS_BASE} CC=${K_CC} LD=${K_LD} AR=${K_AR} NM=${K_NM} OBJCOPY=${K_OBJCOPY} OBJDUMP=${K_OBJDUMP} READELF=${K_READELF} STRIP=${K_STRIP} OBJSIZE=${K_OBJSIZE}"
-          export K_MAKE_PARAMS_BUILD="${K_MAKE_PARAMS_LLVM} KBUILD_BUILD_USER='${K_BUILD_USER}' KBUILD_BUILD_HOST='${K_BUILD_HOST}'"
-          export K_MAKE_PARAMS_BSP="${K_MAKE_PARAMS_BUILD} BSP_BUILD_ANDROID_OS=${K_BSP_BUILD_ANDROID_OS} BSP_BUILD_FAMILY=${K_BSP_BUILD_FAMILY}"
-          # Ensure host tools (like dtc) can link libyaml if needed during any make stage
-          export K_MAKE_PARAMS_FINAL="${K_MAKE_PARAMS_BSP} HOSTLDLIBS='-lyaml'"
+          # --- Export Exactly the Required Build Environment Variables ---
+          export ARCH="arm64"
+          export CC="clang"
+          export CLANG_TRIPLE="aarch64-linux-android-"
+          export CROSS_COMPILE="aarch64-linux-android-"
+          export CROSS_COMPILE_ARM32="arm-linux-androideabi-"
+          export LD="ld.lld"
+          export AR="llvm-ar"
+          export NM="llvm-nm"
+          export OBJCOPY="llvm-objcopy"
+          export OBJDUMP="llvm-objdump"
+          export READELF="llvm-readelf"
+          export OBJSIZE="llvm-size"
+          export STRIP="llvm-strip"
+          # export LDGOLD="aarch64-linux-gnu-ld.gold" # Often unused when LD=ld.lld is set, but included as requested
+          export BSP_BUILD_ANDROID_OS="y"
+          export BSP_BUILD_FAMILY="qogirl6"
+          # Note: LLVM_AR and LLVM_DIS are generally redundant if AR/NM/etc. are set to llvm-*
+          # They are omitted here as per the simplified approach. Add back if build explicitly requires them.
 
           echo "--- Build Environment Summary ---"
-          echo "ARCH: ${K_ARCH}"
+          echo "ARCH: ${ARCH}"
+          echo "CC: ${CC}"
+          echo "LD: ${LD}"
+          echo "AR: ${AR}"
+          echo "NM: ${NM}"
+          echo "STRIP: ${STRIP}"
+          echo "CROSS_COMPILE: ${CROSS_COMPILE}"
+          echo "CROSS_COMPILE_ARM32: ${CROSS_COMPILE_ARM32}"
+          echo "BSP_BUILD_ANDROID_OS: ${BSP_BUILD_ANDROID_OS}"
+          echo "BSP_BUILD_FAMILY: ${BSP_BUILD_FAMILY}"
           echo "Output Dir: $(pwd)/out"
-          echo "Using Clang/LLD Toolchain"
-          echo "Using GCC Cross Compile Tools: ${K_CROSS_COMPILE} / ${K_CROSS_COMPILE_ARM32}"
-          echo "Host Libs Linker Flags: -lyaml"
+          echo "Host Libs Linker Flags for make: -lyaml"
+          echo "PATH: $PATH" # Verify PATH includes toolchains
           echo "--------------------------------"
 
           # --- Prepare Output Directory & Config ---
@@ -120,61 +122,110 @@ jobs:
 
           # --- Generate Final Config (olddefconfig) ---
           echo "Generating final .config using 'make olddefconfig'..."
-          make ${K_MAKE_PARAMS_FINAL} olddefconfig
+          # Pass necessary variables directly to make. HOSTLDLIBS is crucial here for dtc.
+          make O=out \
+               ARCH=${ARCH} \
+               CC=${CC} \
+               CLANG_TRIPLE=${CLANG_TRIPLE} \
+               CROSS_COMPILE=${CROSS_COMPILE} \
+               CROSS_COMPILE_ARM32=${CROSS_COMPILE_ARM32} \
+               LD=${LD} \
+               AR=${AR} \
+               NM=${NM} \
+               OBJCOPY=${OBJCOPY} \
+               OBJDUMP=${OBJDUMP} \
+               READELF=${READELF} \
+               STRIP=${STRIP} \
+               BSP_BUILD_ANDROID_OS=${BSP_BUILD_ANDROID_OS} \
+               BSP_BUILD_FAMILY=${BSP_BUILD_FAMILY} \
+               HOSTLDLIBS="-lyaml" \
+               olddefconfig
           echo "'make olddefconfig' finished."
 
           # --- Build Kernel, DTBs, and Modules ---
           echo "Starting kernel build (Image.gz, dtbs, modules)..."
           echo "::group::Build Kernel, DTBs, and Modules (Verbose Log)"
-          # V=1 for verbose build log, -j for parallelism
-          make ${K_MAKE_PARAMS_FINAL} -j$(nproc) V=1 Image.gz dtbs modules
+          # Pass necessary variables directly to make. HOSTLDLIBS is crucial here for dtc.
+          make O=out -j$(nproc) V=1 \
+               ARCH=${ARCH} \
+               CC=${CC} \
+               CLANG_TRIPLE=${CLANG_TRIPLE} \
+               CROSS_COMPILE=${CROSS_COMPILE} \
+               CROSS_COMPILE_ARM32=${CROSS_COMPILE_ARM32} \
+               LD=${LD} \
+               AR=${AR} \
+               NM=${NM} \
+               OBJCOPY=${OBJCOPY} \
+               OBJDUMP=${OBJDUMP} \
+               READELF=${READELF} \
+               STRIP=${STRIP} \
+               BSP_BUILD_ANDROID_OS=${BSP_BUILD_ANDROID_OS} \
+               BSP_BUILD_FAMILY=${BSP_BUILD_FAMILY} \
+               HOSTLDLIBS="-lyaml" \
+               Image.gz dtbs modules
           echo "::endgroup::"
           echo "Main kernel build finished."
 
           # --- Install Modules, Run depmod, Strip Modules ---
           echo "Processing kernel modules..."
           echo "::group::Install, Depmod, Strip Modules"
-          MODULES_STAGING_DIR="${{ env.MODULES_STAGING_PATH }}" # Use workflow env var
+          MODULES_STAGING_DIR="${{ env.MODULES_STAGING_PATH }}"
           rm -rf "${MODULES_STAGING_DIR}"
           mkdir -p "${MODULES_STAGING_DIR}"
           echo "Installing modules to staging path: ${MODULES_STAGING_DIR}"
-          make ${K_MAKE_PARAMS_FINAL} INSTALL_MOD_PATH="${MODULES_STAGING_DIR}" modules_install
+          # Pass necessary variables directly to make. HOSTLDLIBS as a safety measure.
+          make O=out \
+               ARCH=${ARCH} \
+               CC=${CC} \
+               CLANG_TRIPLE=${CLANG_TRIPLE} \
+               CROSS_COMPILE=${CROSS_COMPILE} \
+               CROSS_COMPILE_ARM32=${CROSS_COMPILE_ARM32} \
+               LD=${LD} \
+               AR=${AR} \
+               NM=${NM} \
+               OBJCOPY=${OBJCOPY} \
+               OBJDUMP=${OBJDUMP} \
+               READELF=${READELF} \
+               STRIP=${STRIP} \
+               BSP_BUILD_ANDROID_OS=${BSP_BUILD_ANDROID_OS} \
+               BSP_BUILD_FAMILY=${BSP_BUILD_FAMILY} \
+               INSTALL_MOD_PATH="${MODULES_STAGING_DIR}" \
+               HOSTLDLIBS="-lyaml" \
+               modules_install
 
           # Find the installed kernel version directory
           KVER_DIR=$(find "${MODULES_STAGING_DIR}/lib/modules/" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -n 1)
           if [ -z "$KVER_DIR" ]; then
             echo "⚠️ Warning: Kernel version directory not found in staging path. Skipping depmod and strip."
-            KVER="" # Signal that modules are not available/processed
+            KVER=""
           else
             KVER=$(basename "$KVER_DIR")
             echo "Found kernel version: $KVER"
             MODULES_DIR="${MODULES_STAGING_DIR}/lib/modules/$KVER"
-
-            # Check if actual kernel modules exist before running depmod/strip
             MODULE_KERNEL_DIR="$MODULES_DIR/kernel"
+
             if [ ! -d "$MODULE_KERNEL_DIR" ] || [ -z "$(find "$MODULE_KERNEL_DIR" -name '*.ko')" ]; then
                echo "⚠️ Warning: No kernel modules (.ko files) found for $KVER in $MODULE_KERNEL_DIR. Skipping depmod and strip."
-               KVER="" # Signal that modules are not available/processed
+               KVER=""
             else
-               # Generate modules.dep and map files
                echo "Running depmod for kernel $KVER..."
                depmod -a -b "${MODULES_STAGING_DIR}" "$KVER"
                echo "depmod finished."
 
-               # Strip debugging symbols using the configured STRIP tool (llvm-strip)
-               echo "Stripping modules using ${K_STRIP}..."
-               find "$MODULES_DIR" -name '*.ko' -exec ${K_STRIP} --strip-unneeded {} +
+               # Use the STRIP variable exported earlier (should be llvm-strip)
+               echo "Stripping modules using ${STRIP}..."
+               find "$MODULES_DIR" -name '*.ko' -exec ${STRIP} --strip-unneeded {} +
                echo "Stripping finished."
             fi
           fi
-          # Store KVER in an output variable for potential use later (e.g., naming artifacts)
           echo "Final KVER processed (if any): $KVER"
+          # Output KVER for potential use in artifact naming/checking
           echo "::set-output name=kernel_version::$KVER"
           echo "::endgroup::"
 
           # --- Verify Build Success ---
           echo "Verifying kernel image presence..."
-          KERNEL_IMAGE_PATH="out/arch/${K_ARCH}/boot/Image.gz"
+          KERNEL_IMAGE_PATH="out/arch/${ARCH}/boot/Image.gz"
           if [ ! -f ${KERNEL_IMAGE_PATH} ]; then
             echo "❌ Build failed: Kernel image '${KERNEL_IMAGE_PATH}' not found."
             exit 1
@@ -187,6 +238,7 @@ jobs:
           ARTIFACT_DIR="${{ env.ARTIFACT_DIR }}"
           KERNEL_SOURCE_DIR="${{ github.workspace }}/kernel_source"
           MODULES_STAGING_DIR="${{ env.MODULES_STAGING_PATH }}"
+          # Use the globally defined KERNEL_ARCH which matches the build ARCH
           K_ARCH="${{ env.KERNEL_ARCH }}"
 
           mkdir -p "$ARTIFACT_DIR"
@@ -198,42 +250,38 @@ jobs:
             echo "Copying Kernel Image.gz..."
             cp "$KERNEL_IMAGE_PATH" "$ARTIFACT_DIR/"
           else
-            # This should ideally be caught by the previous step's verification
             echo "❌ Error: Kernel Image not found at $KERNEL_IMAGE_PATH"
             exit 1
           fi
 
-          # Copy DTBs (Device Tree Blobs)
+          # Copy DTBs
           DTB_SOURCE_DIR="$KERNEL_SOURCE_DIR/out/arch/${K_ARCH}/boot/dts/"
           if [ -d "$DTB_SOURCE_DIR" ] && [ -n "$(find "$DTB_SOURCE_DIR" -name '*.dtb')" ]; then
              echo "Copying DTBs from $DTB_SOURCE_DIR..."
-             # Create a subdir for DTBs in artifact for clarity (optional)
              mkdir -p "$ARTIFACT_DIR/dtbs"
              find "$DTB_SOURCE_DIR" -name '*.dtb' -exec cp -v {} "$ARTIFACT_DIR/dtbs/" \;
           else
              echo "⚠️ Warning: DTB directory $DTB_SOURCE_DIR not found or empty. Skipping DTB copy."
           fi
 
-          # Create compressed tarball of modules (only if processed successfully)
-          # Re-determine KVER from the staging directory to ensure correctness
-          KVER_FROM_STAGING=$(find "${MODULES_STAGING_DIR}/lib/modules/" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; 2>/dev/null | head -n 1)
-          # Can also use output from previous step: KVER_FROM_STAGING="${{ steps.build_step.outputs.kernel_version }}"
+          # Create compressed tarball of modules
+          # Use KVER output from build step for reliability
+          KVER_FROM_BUILD="${{ steps.build_step.outputs.kernel_version }}"
 
-          if [ -n "$KVER_FROM_STAGING" ]; then
-            MODULES_INSTALL_DIR="${MODULES_STAGING_DIR}/lib/modules/$KVER_FROM_STAGING"
-            # Double check if the kernel subdirectory with actual modules exists
+          if [ -n "$KVER_FROM_BUILD" ]; then
+            MODULES_INSTALL_DIR="${MODULES_STAGING_DIR}/lib/modules/$KVER_FROM_BUILD"
             MODULE_KERNEL_DIR="$MODULES_INSTALL_DIR/kernel"
+            # Final check if modules exist before packaging
             if [ -d "$MODULE_KERNEL_DIR" ] && [ -n "$(find "$MODULE_KERNEL_DIR" -name '*.ko')" ]; then
-              MODULE_TARBALL="modules-$KVER_FROM_STAGING.tar.gz"
-              echo "Modules found for kernel $KVER_FROM_STAGING. Creating compressed tarball $ARTIFACT_DIR/$MODULE_TARBALL ..."
-              # -C changes directory *before* archiving, '.' archives current dir content
+              MODULE_TARBALL="modules-$KVER_FROM_BUILD.tar.gz"
+              echo "Modules found for kernel $KVER_FROM_BUILD. Creating compressed tarball $ARTIFACT_DIR/$MODULE_TARBALL ..."
               tar czf "$ARTIFACT_DIR/$MODULE_TARBALL" -C "$MODULES_INSTALL_DIR" .
               echo "Module tarball created: $ARTIFACT_DIR/$MODULE_TARBALL"
             else
-              echo "⚠️ Warning: No actual kernel modules (.ko files) found in $MODULE_KERNEL_DIR. Skipping module packaging."
+              echo "⚠️ Warning: Post-build check failed - No .ko files found in $MODULE_KERNEL_DIR. Skipping module packaging."
             fi
           else
-            echo "ℹ️ Info: No kernel modules were found in the staging directory or processed successfully. Skipping module packaging."
+            echo "ℹ️ Info: No kernel version processed in build step. Skipping module packaging."
           fi
 
           echo "Artifact preparation finished. Contents of $ARTIFACT_DIR:"
@@ -242,6 +290,6 @@ jobs:
       - name: 📤 Upload Kernel Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-${{ env.KERNEL_ARCH }}-modules-${{ github.run_id }} # Descriptive name
+          name: kernel-${{ env.KERNEL_ARCH }}-modules-${{ github.run_id }}
           path: ${{ env.ARTIFACT_DIR }}/* # Upload all files/dirs within the artifact directory
-          if-no-files-found: error # Fail the workflow if no artifact files were generated
+          if-no-files-found: error
