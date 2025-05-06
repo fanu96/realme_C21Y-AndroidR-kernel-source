@@ -93,6 +93,9 @@ jobs:
           export BSP_BUILD_FAMILY="qogirl6"
           export LLVM_AR="llvm-ar"
           export LLVM_DIS="llvm-dis"
+          export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}
+          YAML_LIBS=$(pkg-config --libs yaml-0.1 2>/dev/null || echo "-lyaml -L/usr/lib/x86_64-linux-gnu")
+          export HOST_LDFLAGS="$YAML_LIBS"
 
           echo "--- Build Environment Summary ---"
           echo "ARCH: ${ARCH}"
@@ -138,7 +141,7 @@ jobs:
                STRIP=${STRIP} \
                BSP_BUILD_ANDROID_OS=${BSP_BUILD_ANDROID_OS} \
                BSP_BUILD_FAMILY=${BSP_BUILD_FAMILY} \
-               HOSTLDLIBS="-lyaml" \
+               HOSTLDFLAGS="${HOST_LDFLAGS} \
                olddefconfig
           echo "'make olddefconfig' finished."
 
@@ -161,7 +164,7 @@ jobs:
                STRIP=${STRIP} \
                BSP_BUILD_ANDROID_OS=${BSP_BUILD_ANDROID_OS} \
                BSP_BUILD_FAMILY=${BSP_BUILD_FAMILY} \
-               HOSTLDLIBS="-lyaml" \
+               HOSTLDFLAGS="${HOST_LDFLAGS} \
                Image.gz dtbs modules
           echo "::endgroup::"
           echo "Main kernel build finished."
@@ -190,7 +193,7 @@ jobs:
                BSP_BUILD_ANDROID_OS=${BSP_BUILD_ANDROID_OS} \
                BSP_BUILD_FAMILY=${BSP_BUILD_FAMILY} \
                INSTALL_MOD_PATH="${MODULES_STAGING_DIR}" \
-               HOSTLDLIBS="-lyaml" \
+               HOSTLDFLAGS="${HOST_LDFLAGS} \
                modules_install
 
           # Find the installed kernel version directory
