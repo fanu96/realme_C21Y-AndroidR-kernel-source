@@ -63,7 +63,7 @@ jobs:
           # PATH is handled by GITHUB_PATH mechanism
           export ARCH="arm64"
           export CC="clang"
-          # Note: Using CLANG_TRIPLE from mandatory list. If issues, consider 'aarch64-linux-gnu-'
+          # Using the user-provided triple since the Makefile specifically detects Android target
           export CLANG_TRIPLE="aarch64-linux-android-"
           export CROSS_COMPILE="aarch64-linux-android-"
           export CROSS_COMPILE_ARM32="arm-linux-androideabi-"
@@ -75,13 +75,26 @@ jobs:
           export READELF="llvm-readelf"
           export OBJSIZE="llvm-size"
           export STRIP="llvm-strip"
-          export LDGOLD="aarch64-linux-gnu-ld.gold"
+          export LDGOLD="aarch64-linux-gnu-ld.gold" # Usually not needed, but kept as requested
           export LLVM_AR="llvm-ar" # Redundant with AR=llvm-ar
           export LLVM_DIS="llvm-dis"
           export BSP_BUILD_ANDROID_OS="y"
           export BSP_BUILD_FAMILY="qogirl6"
 
-          
+          #─── Add Other Necessary Exports (Host tools, Kbuild flags) ─────────
+          # These are needed for Clang builds even if not in the "mandatory" list
+          export LLVM=1 LLVM_IAS=1
+          export CXX="clang++" # Add CXX for completeness
+          export HOSTCC="clang"
+          export HOSTCXX="clang++"
+          export HOSTLD="ld.lld" # Essential for fixing linker error
+          export HOSTAR="llvm-ar"
+          export HOSTNM="llvm-nm" # From working snippet args
+          # Export other host tools for completeness, though not all passed on cmdline
+          export HOSTOBJCOPY="llvm-objcopy"
+          export HOSTOBJDUMP="llvm-objdump"
+          export HOSTSTRIP="llvm-strip"
+          export HOSTREADELF="llvm-readelf"
           export KBUILD_BUILD_USER="fanu"
           export KBUILD_BUILD_HOST="github.com"
 
@@ -95,18 +108,26 @@ jobs:
 
           #─── Prepare output & config ───────────────────────────────────────────
           mkdir -p ${{ env.OUT_DIR }}
-          cp stock_kernel.config ${{ env.OUT_DIR }}/.config
+          cp stock_kernel.config ${{ env.OUT_DIR }}/.config # Assumes stock_kernel.config is at the root
 
-          #─── Run Make Commands with Explicit Args from Working Snippet ───────
+          #─── Run Make Commands with Explicit Args from Working Snippet (plus CLANG_TRIPLE/CROSS_COMPILE) ───────
           # This command line overrides environment if necessary and matches the working example pattern
           echo "Running make olddefconfig..."
           make O=${{ env.OUT_DIR }} \
                ARCH=${ARCH} \
                CC=${CC} \
+               CXX=${CXX} \
                LD=${LD} \
                AR=${AR} \
                NM=${NM} \
+               HOSTCC=${HOSTCC} \
+               HOSTCXX=${HOSTCXX} \
+               HOSTLD=${HOSTLD} \
+               HOSTAR=${HOSTAR} \
+               HOSTNM=${HOSTNM} \
                HOSTLDFLAGS="${HOST_LDFLAGS}" \
+               CLANG_TRIPLE=${CLANG_TRIPLE} \
+               CROSS_COMPILE=${CROSS_COMPILE} \
                olddefconfig
 
           echo "::group::Build Kernel, DTBs, and Modules"
@@ -114,16 +135,21 @@ jobs:
           make -j$(nproc) O=${{ env.OUT_DIR }} V=1 \
                ARCH=${ARCH} \
                CC=${CC} \
+               CXX=${CXX} \
                LD=${LD} \
                AR=${AR} \
                NM=${NM} \
+               HOSTCC=${HOSTCC} \
+               HOSTCXX=${HOSTCXX} \
+               HOSTLD=${HOSTLD} \
+               HOSTAR=${HOSTAR} \
+               HOSTNM=${HOSTNM} \
                HOSTLDFLAGS="${HOST_LDFLAGS}" \
+               CLANG_TRIPLE=${CLANG_TRIPLE} \
+               CROSS_COMPILE=${CROSS_COMPILE} \
                STOP_SHIP_TRACEPRINTK=1 \
                Image.gz dtbs modules
           echo "::endgroup::"
-
-          # ... (Rest of the script: KVER, modules_install, depmod, strip, verify, etc.) ...
-          # Keep modules_install simpler unless errors occur there
 
           #─── Get Kernel Version String ─────────────────────────────────────────
           KVER=$(make O=${{ env.OUT_DIR }} kernelrelease)
@@ -137,9 +163,11 @@ jobs:
           echo "::group::Install, Depmod, Strip Modules"
           rm -rf "${{ env.MODULES_STAGING_PATH }}"
           mkdir -p "${{ env.MODULES_STAGING_PATH }}"
+          # Use simpler make command for modules_install unless errors occur there
           make O=${{ env.OUT_DIR }} \
                INSTALL_MOD_PATH="${{ env.MODULES_STAGING_PATH }}" \
                modules_install
+
           MODULES_DIR="${{ env.MODULES_STAGING_PATH }}/lib/modules/$KVER"
           if [ ! -d "$MODULES_DIR/kernel" ] && [ -z "$(find "$MODULES_DIR" -name '*.ko' 2>/dev/null)" ]; then
              echo "⚠️ Warning: No kernel modules (.ko files) found for $KVER in $MODULES_DIR. Skipping depmod and strip."
@@ -161,6 +189,7 @@ jobs:
             exit 1
           fi
           echo "✅ Kernel build and module processing successful!"
+          # Pass KVER to the next step via environment file
           echo "KVER=$KVER" >> $GITHUB_ENV
 
       # --- Artifact Preparation ---
@@ -168,8 +197,11 @@ jobs:
         run: |
           ARTIFACT_DIR="$GITHUB_WORKSPACE/artifact"
           mkdir -p "$ARTIFACT_DIR"
+          # Copy Kernel Image
           cp "${{ env.OUT_DIR }}/arch/arm64/boot/Image.gz" "$ARTIFACT_DIR/"
+          # Copy DTBs
           find "${{ env.OUT_DIR }}/arch/arm64/boot/dts/" -name '*.dtb' -exec cp {} "$ARTIFACT_DIR/" \;
+          # Package Modules
           if [ -z "$KVER" ]; then
              echo "KVER is unknown, skipping module packaging."
           else
@@ -188,4 +220,4 @@ jobs:
         with:
           name: kernel-modules-${{ github.run_id }}
           path: ${{ github.workspace }}/artifact/*
-          if-no-files-found: error
+          if-no-files-found: error # Error if Image.gz is missing
