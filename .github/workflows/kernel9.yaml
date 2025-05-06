@@ -64,63 +64,42 @@ jobs:
           echo $PATH
       # <<< NEW STEP END: Download GCC Toolchains >>>
 
-      - name: 🚀 Build Kernel + Modules & Install
-        working-directory: kernel_source # Execute commands within the kernel source directory
+            - name: 🚀 Build Kernel + Modules & Install
+        working-directory: kernel_source
         run: |
           #─── Basic Environment Setup (Updated) ───────────────────────────────
-          # Export variables needed by the kernel build system
-          export ARCH="arm64"                     # Target architecture
-          export CLANG_TRIPLE="aarch64-linux-gnu-" # Clang needs this to find appropriate builtins/includes
-          export CROSS_COMPILE="aarch64-linux-android-" # Prefix for aarch64 GCC tools (linker, as, etc.)
-          export CROSS_COMPILE_ARM32="arm-linux-androideabi-" # Prefix for arm GCC tools (for 32-bit tasks)
-          # Set build user/host for kernel version string (optional, cosmetic)
-          # Ensure values are quoted if they might contain spaces
+          # ... (rest of the exports remain the same) ...
+          export ARCH="arm64"
+          export CLANG_TRIPLE="aarch64-linux-android-"
+          export CROSS_COMPILE="aarch64-linux-android-"
+          export CROSS_COMPILE_ARM32="arm-linux-androideabi-"
           export KBUILD_BUILD_USER="GitHubActions"
           export KBUILD_BUILD_HOST="github.com"
 
           #─── Force LLVM/Clang Usage (Updated) ─────────────────────────────────
-          # Ensure our downloaded toolchains are prioritized in PATH
-          # Order matters: Clang first, then GCCs, then system PATH
           export PATH=${{ github.workspace }}/clang/bin:${{ github.workspace }}/gcc-aarch64/bin:${{ github.workspace }}/gcc-arm/bin:$PATH
-
-          # Explicitly tell the build system to use Clang and LLVM tools
-          export CC="clang"                 # Use clang as the C compiler
-          export LD="ld.lld"                # Use LLVM's linker
-          export AR="llvm-ar"               # Use LLVM's archiver
-          export NM="llvm-nm"               # Use LLVM's symbol table lister
-          export OBJCOPY="llvm-objcopy"       # Use LLVM's objcopy
-          export OBJDUMP="llvm-objdump"       # Use LLVM's objdump
-          export READELF="llvm-readelf"       # Use LLVM's readelf
-          export STRIP="llvm-strip"           # Use LLVM's strip
-          export OBJSIZE="llvm-size"          # Use LLVM's size
-          export LLVM_AR="llvm-ar"          # Alternative variable for LLVM archiver
-          export LLVM_NM="llvm-nm"          # Alternative variable for LLVM nm
-          export LLVM_DIS="llvm-dis"        # LLVM disassembler
-          # LDGOLD usually isn't needed when LD=ld.lld, but doesn't hurt
+          export CC="clang" LD="ld.lld" AR="llvm-ar" NM="llvm-nm"
+          export OBJCOPY="llvm-objcopy" OBJDUMP="llvm-objdump" READELF="llvm-readelf" STRIP="llvm-strip"
+          export OBJSIZE="llvm-size" LLVM_AR="llvm-ar" LLVM_NM="llvm-nm" LLVM_DIS="llvm-dis"
           export LDGOLD="aarch64-linux-android-ld.gold"
 
           #─── BSP Specific Flags (Board Support Package) ────────────────────────
-          # Export custom flags required by this specific kernel source
           export BSP_BUILD_ANDROID_OS="y"
           export BSP_BUILD_FAMILY="qogirl6"
 
           #─── Prepare Output Directory & Config ───────────────────────────────
           echo "Preparing output directory and kernel config..."
-          mkdir -p out # Create the output directory for the build
-          # Check if the config file exists in the source directory
+          mkdir -p out
           if [ ! -f stock_kernel.config ]; then
             echo "❌ Error: stock_kernel.config not found in kernel_source directory."
             exit 1
           fi
-          # Copy the specified config to the output directory as .config
           cp stock_kernel.config out/.config
           echo ".config prepared."
 
           #─── Generate Final Config (olddefconfig) ────────────────────────────
           echo "Generating final .config using 'make olddefconfig'..."
-          # Use 'make olddefconfig' to ensure the .config is consistent and complete
-          # Pass essential variables directly to make (Make also inherits exported vars)
-          # Quote variables that might contain spaces (KBUILD_BUILD_USER/HOST)
+          # Add HOSTLDLIBS here too, just in case olddefconfig triggers any host tool builds
           make O=out \
                ARCH=${ARCH} \
                CLANG_TRIPLE=${CLANG_TRIPLE} \
@@ -136,13 +115,14 @@ jobs:
                KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST}" \
                BSP_BUILD_ANDROID_OS=${BSP_BUILD_ANDROID_OS} \
                BSP_BUILD_FAMILY=${BSP_BUILD_FAMILY} \
+               HOSTLDLIBS="-lyaml" \
                olddefconfig
           echo "'make olddefconfig' finished."
 
           #─── Build Kernel, DTBs, and Modules ─────────────────────────────────
           echo "Starting kernel build (Image.gz, dtbs, modules)..."
           echo "::group::Build Kernel, DTBs, and Modules (Verbose Log)"
-          # Perform the main build using parallel jobs (-j) and verbose output (V=1)
+          # Add HOSTLDLIBS="-lyaml" HERE - This is the most important place
           make O=out -j$(nproc) V=1 \
                ARCH=${ARCH} \
                CLANG_TRIPLE=${CLANG_TRIPLE} \
@@ -158,19 +138,18 @@ jobs:
                KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST}" \
                BSP_BUILD_ANDROID_OS=${BSP_BUILD_ANDROID_OS} \
                BSP_BUILD_FAMILY=${BSP_BUILD_FAMILY} \
-               Image.gz dtbs modules # Targets: Kernel image, device tree blobs, modules
+               HOSTLDLIBS="-lyaml" \
+               Image.gz dtbs modules
           echo "::endgroup::"
           echo "Main kernel build finished."
 
           #─── Install Modules, Run depmod, Strip Modules ───────────────────────
           echo "Processing kernel modules..."
           echo "::group::Install, Depmod, Strip Modules"
-          # Clean any previous staging content and create the directory
           rm -rf "${{ env.MODULES_STAGING_PATH }}"
           mkdir -p "${{ env.MODULES_STAGING_PATH }}"
           echo "Installing modules to staging path: ${{ env.MODULES_STAGING_PATH }}"
-          # Install modules to the specified staging path
-          # Pass INSTALL_MOD_PATH directly to the modules_install target
+          # Add HOSTLDLIBS here too, just in case modules_install triggers any host tool builds
           make O=out \
                ARCH=${ARCH} \
                CLANG_TRIPLE=${CLANG_TRIPLE} \
@@ -187,7 +166,9 @@ jobs:
                BSP_BUILD_ANDROID_OS=${BSP_BUILD_ANDROID_OS} \
                BSP_BUILD_FAMILY=${BSP_BUILD_FAMILY} \
                INSTALL_MOD_PATH="${{ env.MODULES_STAGING_PATH }}" \
+               HOSTLDLIBS="-lyaml" \
                modules_install
+
 
           # Find the kernel version directory created by modules_install
           # Use find to be more robust against potential multiple directories (though unlikely)
