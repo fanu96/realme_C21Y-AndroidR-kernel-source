@@ -1,4 +1,4 @@
-name: Build Kernel for Realme C21Y (RMX3261/RMX3263)
+name: Build Kernel for Realme C21Y (RMX3261/RMX3263) - Stock Clang
 
 on:
   workflow_dispatch:
@@ -6,18 +6,16 @@ on:
 env:
   ARCH: arm64
   KERNEL_SOURCE_DIR: kernel_source
-  # Choose a modern, known-good Clang. Proton Clang is a good option.
+  # --- Use specific Clang from stock kernel ---
   CLANG_REPO: https://github.com/fanu96/android_prebuilts_clang_host_linux-x86_clang-6573524
-  CLANG_BRANCH: '10.0' # Or a specific tag like 13.0.0, 14.0.0 et.
-  CLANG_DIR_NAME: proton-clang
+  CLANG_BRANCH: '10.0' # This corresponds to AOSP Clang 11.0.2 as per the repo's tags/branches
+  CLANG_DIR_NAME: stock-clang # Changed name for clarity
   # --- IMPORTANT: Set your defconfig file name ---
-  # This should be the name of your defconfig file in arch/arm64/configs/
-  # Example: rmx3261_defconfig, C21Y_defconfig, etc.
-  DEFCONFIG_FILE: rmx3261_defconfig # <<< REPLACE THIS
+  DEFCONFIG_FILE: "rmx3261_defconfig" # <<< ENSURE THIS IS CORRECT
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest # ubuntu-22.04 or even ubuntu-20.04 could be more stable with older toolchains
 
     steps:
       - name: 📜 Checkout kernel source
@@ -34,24 +32,28 @@ jobs:
             lsb-release make python3 rsync wget zip unzip \
             libyaml-dev pkg-config ccache
 
-      - name: 📥 Download and Setup Clang Toolchain
+      - name: 📥 Download and Setup Stock Clang Toolchain
         run: |
-          git clone --depth=1 -b ${{ env.CLANG_BRANCH }} ${{ env.CLANG_REPO }} ${{ env.CLANG_DIR_NAME }}
+          echo "Cloning Clang from ${{ env.CLANG_REPO }} branch ${{ env.CLANG_BRANCH }} into ${{ env.CLANG_DIR_NAME }}"
+          git clone --depth=1 -b "${{ env.CLANG_BRANCH }}" "${{ env.CLANG_REPO }}" "${{ env.CLANG_DIR_NAME }}"
           TOOLCHAIN_BIN_DIR="$GITHUB_WORKSPACE/${{ env.CLANG_DIR_NAME }}/bin"
 
-          # Add to GITHUB_PATH for subsequent steps
+          echo "Adding $TOOLCHAIN_BIN_DIR to GITHUB_PATH"
           echo "$TOOLCHAIN_BIN_DIR" >> $GITHUB_PATH
 
-          # Export to PATH for the current step/shell
+          echo "Exporting $TOOLCHAIN_BIN_DIR to current PATH"
           export PATH="$TOOLCHAIN_BIN_DIR:$PATH"
 
-          # Now these commands should use Proton Clang
-          echo "--- Clang from Proton Toolchain ---"
+          echo "--- Clang from Stock Toolchain ---"
           clang --version
-          echo "--- LLD from Proton Toolchain ---"
-          ld.lld --version
-          # You can also verify other tools if needed
-          # llvm-ar --version
+          echo "--- LLD from Stock Toolchain ---"
+          if command -v ld.lld &> /dev/null; then
+            ld.lld --version
+          else
+            echo "ld.lld not found directly, checking for ld symlink to lld."
+            ls -l $TOOLCHAIN_BIN_DIR/ld
+            $TOOLCHAIN_BIN_DIR/ld --version || echo "Could not get version from $TOOLCHAIN_BIN_DIR/ld"
+          fi
 
       - name: 🚀 Configure and Build Kernel
         working-directory: ${{ env.KERNEL_SOURCE_DIR }}
@@ -59,72 +61,54 @@ jobs:
           export KBUILD_BUILD_USER="GitHubActions"
           export KBUILD_BUILD_HOST="github.com"
 
-          # YAML for DTC host tool if needed by your kernel's scripts/dtc
           export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}
           YAML_LIBS=$(pkg-config --libs yaml-0.1 2>/dev/null || echo "-lyaml")
           export HOSTLDFLAGS="${YAML_LIBS}"
 
-          # Make defconfig
           echo "Using defconfig: ${{ env.DEFCONFIG_FILE }}"
           if [ ! -f "arch/${ARCH}/configs/${{ env.DEFCONFIG_FILE }}" ]; then
             echo "❌ ERROR: Defconfig file 'arch/${ARCH}/configs/${{ env.DEFCONFIG_FILE }}' not found!"
             exit 1
           fi
 
-          make O=out \
+          # Define common make flags
+          COMMON_MAKE_FLAGS="O=out \
                ARCH=${ARCH} \
-               CC="ccache clang" \
-               CLANG_TRIPLE="aarch64-linux-gnu-" \
-               CROSS_COMPILE="aarch64-linux-gnu-" \
-               CROSS_COMPILE_ARM32="arm-linux-gnueabi-" \
+               CC=\"ccache clang\" \
+               CLANG_TRIPLE=\"aarch64-linux-gnu-\" \
+               CROSS_COMPILE=\"aarch64-linux-gnu-\" \
+               CROSS_COMPILE_ARM32=\"arm-linux-gnueabi-\" \
                LLVM=1 \
-               LD="ld.lld" AR="llvm-ar" NM="llvm-nm" OBJCOPY="llvm-objcopy" OBJDUMP="llvm-objdump" READELF="llvm-readelf" OBJSIZE="llvm-size" STRIP="llvm-strip" \
-               HOSTLDFLAGS="${HOSTLDFLAGS}" \
-               ${{ env.DEFCONFIG_FILE }}
+               LD=\"ld.lld\" AR=\"llvm-ar\" NM=\"llvm-nm\" OBJCOPY=\"llvm-objcopy\" OBJDUMP=\"llvm-objdump\" READELF=\"llvm-readelf\" OBJSIZE=\"llvm-size\" STRIP=\"llvm-strip\" \
+               HOSTLDFLAGS=\"${HOSTLDFLAGS}\" \
+               HOSTCC=\"gcc\" HOSTLD=\"ld\"" # Use system GCC/LD for host tools
+
+          # Make defconfig
+          make ${COMMON_MAKE_FLAGS} ${{ env.DEFCONFIG_FILE }}
 
           # Build Kernel Image and DTBs
-          # If your device expects the DTB to be appended to Image.gz, you might want to build 'Image.gz-dtb' instead of or in addition to 'Image.gz' and 'dtbs'.
-          # This depends on CONFIG_BUILD_ARM64_APPENDED_DTB in your defconfig.
-          # If CONFIG_BUILD_ARM64_APPENDED_DTB=y, 'Image.gz' might already have the DTB, or 'Image.gz-dtb' will be the target.
-          # If CONFIG_BUILD_ARM64_APPENDED_DTB=n, you'll get separate 'Image.gz' and individual '.dtb' files via the 'dtbs' target.
           echo "Building kernel targets: Image.gz dtbs"
-          make -j$(nproc) O=out \
-               ARCH=${ARCH} \
-               CC="ccache clang" \
-               CLANG_TRIPLE="aarch64-linux-gnu-" \
-               CROSS_COMPILE="aarch64-linux-gnu-" \
-               CROSS_COMPILE_ARM32="arm-linux-gnueabi-" \
-               LLVM=1 \
-               LLVM_IAS=1 \
-               LD="ld.lld" AR="llvm-ar" NM="llvm-nm" OBJCOPY="llvm-objcopy" OBJDUMP="llvm-objdump" READELF="llvm-readelf" OBJSIZE="llvm-size" STRIP="llvm-strip" \
-               HOSTLDFLAGS="${HOSTLDFLAGS}" \
-               Image.gz dtbs # Target for kernel image and individual DTB files
+          # Add LLVM_IAS=1 for the main build if your kernel needs it (common for Clang builds)
+          make -j$(nproc) ${COMMON_MAKE_FLAGS} LLVM_IAS=1 Image.gz dtbs
 
           # Verify build artifacts
           if [ ! -f "out/arch/${ARCH}/boot/Image.gz" ]; then
             echo "❌ Build failed: Image.gz missing"
             exit 1
           fi
-          # Check if any DTB files were produced
           if [ ! -d "out/arch/${ARCH}/boot/dts" ] || [ -z "$(ls -A out/arch/${ARCH}/boot/dts/**/*.dtb 2>/dev/null)" ]; then
              echo "⚠️ WARNING: No DTB files found in out/arch/${ARCH}/boot/dts/. This might be an issue if your device needs a separate DTB."
-             # If you expect an appended DTB (Image.gz-dtb), you might check for that instead/also.
-             # if [ ! -f "out/arch/${ARCH}/boot/Image.gz-dtb" ]; then
-             #   echo "❌ Build failed: Image.gz-dtb missing (if expected)"
-             #   exit 1
-             # fi
           else
             echo "✅ Individual DTB files found."
           fi
           echo "✅ Kernel build successful (Image.gz and dtbs targets attempted)."
 
-      - name: 📦 Prepare Artifact (Basic - for flashable zip, use AnyKernel3)
+      - name: 📦 Prepare Artifact
         run: |
           ARTIFACT_DIR="$GITHUB_WORKSPACE/artifact"
-          mkdir -p "$ARTIFACT_DIR/dtbs" # For individual DTBs
+          mkdir -p "$ARTIFACT_DIR/dtbs"
 
           echo "Copying artifacts to $ARTIFACT_DIR"
-          # Copy Image.gz or Image.gz-dtb depending on your build
           if [ -f "${{ env.KERNEL_SOURCE_DIR }}/out/arch/${{ env.ARCH }}/boot/Image.gz-dtb" ]; then
             cp "${{ env.KERNEL_SOURCE_DIR }}/out/arch/${{ env.ARCH }}/boot/Image.gz-dtb" "$ARTIFACT_DIR/Image.gz-dtb"
             echo "Copied Image.gz-dtb"
@@ -133,8 +117,7 @@ jobs:
             echo "Copied Image.gz"
           fi
 
-          # Copy all individual DTBs from the vendor dts directory (or all if specific path is unknown)
-          VENDOR_DTS_PATH="${{ env.KERNEL_SOURCE_DIR }}/out/arch/${{ env.ARCH }}/boot/dts/" # Adjust if your vendor dts files are in a subfolder
+          VENDOR_DTS_PATH="${{ env.KERNEL_SOURCE_DIR }}/out/arch/${{ env.ARCH }}/boot/dts/"
           if [ -d "$VENDOR_DTS_PATH" ]; then
             find "$VENDOR_DTS_PATH" -name '*.dtb' -print -exec cp -t "$ARTIFACT_DIR/dtbs/" {} +
             if [ -z "$(ls -A $ARTIFACT_DIR/dtbs/ 2>/dev/null)" ]; then
@@ -145,7 +128,6 @@ jobs:
           else
             echo "Vendor DTS path $VENDOR_DTS_PATH not found, skipping individual DTB copy."
           fi
-
           echo "Artifacts prepared:"
           ls -R "$ARTIFACT_DIR"
 
