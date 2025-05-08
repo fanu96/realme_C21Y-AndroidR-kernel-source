@@ -18,19 +18,19 @@ jobs:
       # Clang
       CLANG_REPO:  https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-6573524.git
       CLANG_BRANCH: "10.0"
-      CC: clang # For TARGET, passed explicitly to make
+      CC: clang
       CLANG_TRIPLE: aarch64-linux-gnu-
 
-      # GCC prebuilts
+      # GCC prebuilts (These are present, but the goal is to ensure they are not used for the kernel itself if using LLVM=1)
       GCC_BRANCH:     "lineage-19.1"
       GCC_AARCH64_REPO: https://github.com/rifsxd/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9
       GCC_ARM_REPO:     https://github.com/rifsxd/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9
 
-      # Cross-compilers
+      # Cross-compilers (Kbuild uses these to find the toolchain binaries if not overridden by CC, LD etc.)
       CROSS_COMPILE:        aarch64-linux-android-
       CROSS_COMPILE_ARM32:  arm-linux-androideabi-
 
-      # LLVM tools (for TARGET, passed explicitly to make)
+      # LLVM tools (These explicitly tell Kbuild which LLVM tools to use for the TARGET)
       LD:        ld.lld
       AR:        llvm-ar
       NM:        llvm-nm
@@ -39,8 +39,8 @@ jobs:
       READELF:   llvm-readelf
       OBJSIZE:   llvm-size
       STRIP:     llvm-strip
-      LDGOLD:    aarch64-linux-gnu-ld.gold
-      LLVM_AR:   llvm-ar
+      LDGOLD:    aarch64-linux-gnu-ld.gold # As per user, this is intended
+      LLVM_AR:   llvm-ar # Can be redundant if AR=llvm-ar, but harmless
       LLVM_DIS:  llvm-dis
 
       # Build flags
@@ -60,64 +60,72 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             bc build-essential libncurses-dev git curl ccache \
-            libyaml-dev pkg-config # pkg-config is essential
+            libyaml-dev pkg-config # pkg-config is installed
 
       - name: Clone Clang toolchain
         run: |
           set -e
-          git clone --depth=1 --branch "${{ env.CLANG_BRANCH }}" "${{ env.CLANG_REPO }}" clang-toolchain
-          echo "${{ github.workspace }}/clang-toolchain/bin" >> $GITHUB_PATH
-
-      - name: Verify Clang and LLD versions
-        run: |
-          set -e
-          echo "Clang version:"
-          clang --version
-          echo "LLD version:"
-          ld.lld --version
+          git clone --depth=1 --branch ${CLANG_BRANCH} ${CLANG_REPO} clang
+          echo "${{ github.workspace }}/clang/bin" >> $GITHUB_PATH
 
       - name: Clone GCC aarch64 toolchain
         run: |
           set -e
-          git clone --depth=1 --branch "${{ env.GCC_BRANCH }}" "${{ env.GCC_AARCH64_REPO }}" gcc-aarch64
+          git clone --depth=1 --branch ${GCC_BRANCH} ${GCC_AARCH64_REPO} gcc-aarch64
           echo "${{ github.workspace }}/gcc-aarch64/bin" >> $GITHUB_PATH
 
       - name: Clone GCC arm toolchain
         run: |
           set -e
-          git clone --depth=1 --branch "${{ env.GCC_BRANCH }}" "${{ env.GCC_ARM_REPO }}" gcc-arm
+          git clone --depth=1 --branch ${GCC_BRANCH} ${GCC_ARM_REPO} gcc-arm
           echo "${{ github.workspace }}/gcc-arm/bin" >> $GITHUB_PATH
 
       - name: Generate defconfig
         run: |
           set -e
-          # For host tools during defconfig generation, ensure libyaml flags are available.
-          export PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}"
-          
+          # HOSTCC, HOSTLD etc. are not strictly needed here if the host system's tools are fine for defconfig generation
+          # But applying HOST_LDFLAGS here ensures consistency if any host tool involved in defconfig needs libyaml
+          export PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}" # Optional, but safe
+          YAML_HOST_LIBS="$(pkg-config --libs yaml-0.1 2>/dev/null || echo "-lyaml")" # Simpler fallback
+          export HOST_LDFLAGS="${HOST_LDFLAGS:-} ${YAML_HOST_LIBS}" # Append to existing HOST_LDFLAGS if any
+
           make -s O=${OBJ_DIR} ARCH=${ARCH} ${CONFIG} \
-            HOSTCFLAGS="$(pkg-config --cflags yaml-0.1 2>/dev/null || echo '')" \
-            HOST_LDFLAGS="$(pkg-config --libs yaml-0.1 2>/dev/null || echo "-lyaml")" \
+            HOSTLDFLAGS="${HOST_LDFLAGS}" \
             -j$(nproc)
 
       - name: Compile kernel
         run: |
           set -e
-          # Setup TARGET CC with ccache if enabled
           if [ "${ENABLE_CCACHE}" = "true" ]; then
-            export CC_FOR_TARGET_MAKE="ccache ${{ env.CC }}" # env.CC is 'clang'
+            export CC_FOR_MAKE="ccache ${CC}"
           else
-            export CC_FOR_TARGET_MAKE="${{ env.CC }}"
+            export CC_FOR_MAKE="${CC}"
           fi
 
-          # For host tools like dtc, ensure libyaml flags are available.
-          export PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}"
+          # Setup HOST environment for tools like DTC
+          # Ensure Clang is used for HOST tools if desired and available, otherwise system gcc/cc will be used
+          # The working script explicitly sets HOSTCC=clang, HOSTLD=ld.lld etc.
+          # If your cloned clang toolchain is meant for host tools as well, set these:
+          export HOSTCC=clang
+          export HOSTLD=ld.lld
+          # Add HOSTAR=llvm-ar, HOSTCXX=clang++ if needed by any host C++ tools or archivers
+
+          # Get YAML flags specifically for HOST linking
+          export PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}" # Optional, but safe
+          YAML_HOST_CFLAGS="$(pkg-config --cflags yaml-0.1 2>/dev/null || echo '')"
+          YAML_HOST_LIBS="$(pkg-config --libs yaml-0.1 2>/dev/null || echo "-lyaml")" # Simpler fallback, assumes lib is in default path
+
+          # Append to HOSTCFLAGS and HOST_LDFLAGS for the 'make' command's environment
+          # This ensures host tools (like dtc) get these flags.
+          export HOSTCFLAGS="${HOSTCFLAGS:-} ${YAML_HOST_CFLAGS}"
+          export HOST_LDFLAGS="${HOST_LDFLAGS:-} ${YAML_HOST_LIBS}"
 
           make O=${OBJ_DIR} ARCH=${ARCH} \
             LLVM=1 \
             LLVM_IAS=1 \
             BSP_BUILD_ANDROID_OS=${BSP_BUILD_ANDROID_OS} \
             BSP_BUILD_FAMILY=${BSP_BUILD_FAMILY} \
-            CC="${CC_FOR_TARGET_MAKE}" \
+            CC="${CC_FOR_MAKE}" \
             CLANG_TRIPLE=${CLANG_TRIPLE} \
             CROSS_COMPILE=${CROSS_COMPILE} \
             CROSS_COMPILE_ARM32=${CROSS_COMPILE_ARM32} \
@@ -132,9 +140,10 @@ jobs:
             LDGOLD=${LDGOLD} \
             LLVM_AR=${LLVM_AR} \
             LLVM_DIS=${LLVM_DIS} \
-            HOSTCFLAGS="$(pkg-config --cflags yaml-0.1 2>/dev/null || echo '')" \
-            HOST_LDFLAGS="$(pkg-config --libs yaml-0.1 2>/dev/null || echo "-lyaml")" \
-            V=1 \
+            HOSTCC="${HOSTCC}" \
+            HOSTLD="${HOSTLD}" \
+            HOSTCFLAGS="${HOSTCFLAGS}" \
+            HOSTLDFLAGS="${HOST_LDFLAGS}" \
             -j$(nproc)
 
       - name: Report result
@@ -142,13 +151,7 @@ jobs:
           if [ -f "${OBJ_DIR}/arch/${ARCH}/boot/Image" ]; then
             echo "✅ Kernel built successfully."
             echo "Kernel image: ${OBJ_DIR}/arch/${ARCH}/boot/Image"
-            ls -lh "${OBJ_DIR}/arch/${ARCH}/boot/" # List contents for verification
-          elif [ -f "${OBJ_DIR}/arch/${ARCH}/boot/Image.gz" ]; then # Check for Image.gz too
-            echo "✅ Kernel built successfully (Image.gz)."
-            echo "Kernel image: ${OBJ_DIR}/arch/${ARCH}/boot/Image.gz"
-            ls -lh "${OBJ_DIR}/arch/${ARCH}/boot/"
           else
-            echo "❌ Build failed: Kernel Image not found in ${OBJ_DIR}/arch/${ARCH}/boot/" >&2
-            ls -lR "${OBJ_DIR}" # List output directory for debugging
+            echo "❌ Build failed: Image not found in ${OBJ_DIR}/arch/${ARCH}/boot/" >&2
             exit 1
           fi
