@@ -37,9 +37,21 @@ jobs:
       - name: 📥 Download and Setup Clang Toolchain
         run: |
           git clone --depth=1 -b ${{ env.CLANG_BRANCH }} ${{ env.CLANG_REPO }} ${{ env.CLANG_DIR_NAME }}
-          echo "$GITHUB_WORKSPACE/${{ env.CLANG_DIR_NAME }}/bin" >> $GITHUB_PATH
+          TOOLCHAIN_BIN_DIR="$GITHUB_WORKSPACE/${{ env.CLANG_DIR_NAME }}/bin"
+
+          # Add to GITHUB_PATH for subsequent steps
+          echo "$TOOLCHAIN_BIN_DIR" >> $GITHUB_PATH
+
+          # Export to PATH for the current step/shell
+          export PATH="$TOOLCHAIN_BIN_DIR:$PATH"
+
+          # Now these commands should use Proton Clang
+          echo "--- Clang from Proton Toolchain ---"
           clang --version
+          echo "--- LLD from Proton Toolchain ---"
           ld.lld --version
+          # You can also verify other tools if needed
+          # llvm-ar --version
 
       - name: 🚀 Configure and Build Kernel
         working-directory: ${{ env.KERNEL_SOURCE_DIR }}
