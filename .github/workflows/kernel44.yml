@@ -55,7 +55,7 @@ jobs:
             $TOOLCHAIN_BIN_DIR/ld --version || echo "Could not get version from $TOOLCHAIN_BIN_DIR/ld"
           fi
 
-            - name: 🚀 Configure and Build Kernel
+      - name: 🚀 Configure and Build Kernel
         working-directory: ${{ env.KERNEL_SOURCE_DIR }}
         run: |
           export KBUILD_BUILD_USER="GitHubActions"
