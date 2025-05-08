@@ -87,6 +87,9 @@ jobs:
             export CC="ccache ${CC}"
           fi
 
+          export YAML_CFLAGS="$(pkg-config --cflags yaml-0.1)"
+          export YAML_LIBS="$(pkg-config --libs   yaml-0.1)"
+
           make O=${OBJ_DIR} ARCH=${ARCH} \
             BSP_BUILD_ANDROID_OS=${BSP_BUILD_ANDROID_OS} \
             BSP_BUILD_FAMILY=${BSP_BUILD_FAMILY} \
@@ -105,6 +108,8 @@ jobs:
             LDGOLD=${LDGOLD} \
             LLVM_AR=${LLVM_AR} \
             LLVM_DIS=${LLVM_DIS} \
+            YAML_CFLAGS="${YAML_CFLAGS}" \
+            YAML_LIBS="${YAML_LIBS}" \
             -j$(nproc)
 
       - name: Report result
