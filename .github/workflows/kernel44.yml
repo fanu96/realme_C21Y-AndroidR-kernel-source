@@ -76,7 +76,7 @@ jobs:
           set -x # Echo commands before executing them
           make O=out \
                ARCH=${ARCH} \
-               CC="clang" \ # <--- Simplified to clang
+               CC="clang" \
                CLANG_TRIPLE="aarch64-linux-gnu-" \
                CROSS_COMPILE="aarch64-linux-gnu-" \
                CROSS_COMPILE_ARM32="arm-linux-gnueabi-" \
@@ -100,7 +100,7 @@ jobs:
           set -x
           make -j$(nproc) O=out \
                ARCH=${ARCH} \
-               CC="clang" \ # <--- Simplified to clang
+               CC="clang" \
                CLANG_TRIPLE="aarch64-linux-gnu-" \
                CROSS_COMPILE="aarch64-linux-gnu-" \
                CROSS_COMPILE_ARM32="arm-linux-gnueabi-" \
