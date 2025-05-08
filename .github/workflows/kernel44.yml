@@ -22,9 +22,9 @@ jobs:
       CLANG_TRIPLE: aarch64-linux-gnu-
 
       # GCC prebuilts
-      GCC_BRANCH:     "lineage-19.1"
-      GCC_AARCH64_REPO: https://github.com/rifsxd/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9
-      GCC_ARM_REPO:     https://github.com/rifsxd/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9
+      GCC_BRANCH:        "lineage-19.1"
+      GCC_AARCH64_REPO:  https://github.com/rifsxd/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9
+      GCC_ARM_REPO:      https://github.com/rifsxd/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9
 
       # Cross-compilers
       CROSS_COMPILE:        aarch64-linux-android-
@@ -39,14 +39,14 @@ jobs:
       READELF:   llvm-readelf
       OBJSIZE:   llvm-size
       STRIP:     llvm-strip
-      LDGOLD:    aarch64-linux-gnu-ld.gold # User intends to use this.
+      LDGOLD:    aarch64-linux-gnu-ld.gold
       LLVM_AR:   llvm-ar
       LLVM_DIS:  llvm-dis
 
       # Build flags
-      ENABLE_CCACHE:     true
-      BSP_BUILD_ANDROID_OS: 'y'
-      BSP_BUILD_FAMILY: 'qogirl6'
+      ENABLE_CCACHE:          true
+      BSP_BUILD_ANDROID_OS:   'y'
+      BSP_BUILD_FAMILY:       'qogirl6'
 
     steps:
       - name: Checkout source
@@ -59,8 +59,8 @@ jobs:
           set -e
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            bc build-essential libncurses-dev git curl ccache \
-            libyaml-dev pkg-config # Added pkg-config
+            bc build-essential libncurses-dev git curl clang ccache \
+            libyaml-dev pkg-config
 
       - name: Clone Clang toolchain
         run: |
@@ -88,6 +88,7 @@ jobs:
       - name: Compile kernel
         run: |
           set -e
+
           # wrap clang in ccache if requested
           if [ "${ENABLE_CCACHE}" = "true" ]; then
             export CC_FOR_MAKE="ccache ${CC}"
@@ -95,13 +96,9 @@ jobs:
             export CC_FOR_MAKE="${CC}"
           fi
 
-          # Ensure pkg-config commands don't fail the script if yaml-0.1 isn't found,
-          # though it should be after installing libyaml-dev.
-          # These variables will be empty if pkg-config fails.
-          export YAML_CFLAGS_VALUE="$(pkg-config --cflags yaml-0.1 || echo '')"
-          export YAML_LIBS_VALUE="$(pkg-config --libs   yaml-0.1 || echo '')"
-          export CFLAGS="${CFLAGS} ${YAML_CFLAGS_VALUE}"
-          export LDFLAGS="${LDFLAGS} ${YAML_LIBS_VALUE}"
+          # Get host-only libyaml flags
+          YAML_HOST_CFLAGS="$(pkg-config --cflags yaml-0.1 || echo '')"
+          YAML_HOST_LIBS="$(pkg-config --libs yaml-0.1 || echo '')"
 
           make O=${OBJ_DIR} ARCH=${ARCH} \
             LLVM=1 \
@@ -123,8 +120,8 @@ jobs:
             LDGOLD=${LDGOLD} \
             LLVM_AR=${LLVM_AR} \
             LLVM_DIS=${LLVM_DIS} \
-            YAML_CFLAGS="${YAML_CFLAGS_VALUE}" \
-            YAML_LIBS="${YAML_LIBS_VALUE}" \
+            HOSTCFLAGS_dtc="${YAML_HOST_CFLAGS}" \
+            HOSTLDLIBS_dtc="${YAML_HOST_LIBS}" \
             -j$(nproc)
 
       - name: Report result
