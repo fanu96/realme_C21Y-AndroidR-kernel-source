@@ -39,8 +39,8 @@ jobs:
       READELF:   llvm-readelf
       OBJSIZE:   llvm-size
       STRIP:     llvm-strip
-      LDGOLD:    aarch64-linux-gnu-ld.gold # As per user, this is intended
-      LLVM_AR:   llvm-ar # Can be redundant if AR=llvm-ar, but harmless
+      LDGOLD:    aarch64-linux-gnu-ld.gold
+      LLVM_AR:   llvm-ar
       LLVM_DIS:  llvm-dis
 
       # Build flags
@@ -60,7 +60,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             bc build-essential libncurses-dev git curl ccache \
-            libyaml-dev pkg-config # pkg-config is installed
+            libyaml-dev pkg-config
 
       - name: Clone Clang toolchain
         run: |
@@ -83,14 +83,17 @@ jobs:
       - name: Generate defconfig
         run: |
           set -e
-          # HOSTCC, HOSTLD etc. are not strictly needed here if the host system's tools are fine for defconfig generation
-          # But applying HOST_LDFLAGS here ensures consistency if any host tool involved in defconfig needs libyaml
-          export PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}" # Optional, but safe
-          YAML_HOST_LIBS="$(pkg-config --libs yaml-0.1 2>/dev/null || echo "-lyaml")" # Simpler fallback
-          export HOST_LDFLAGS="${HOST_LDFLAGS:-} ${YAML_HOST_LIBS}" # Append to existing HOST_LDFLAGS if any
+          export PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}"
+          YAML_HOST_LIBS="$(pkg-config --libs yaml-0.1 2>/dev/null || echo "-lyaml")"
+          # Make sure HOST_LDFLAGS is correctly defined and exported if it needs to persist
+          # or pass it directly if Kbuild picks it up from the make command line for this step.
+          # The original "working" script exported HOST_LDFLAGS.
+          # If just passing is sufficient for your Kbuild for defconfig, this is fine:
+          # For safety, ensuring it's set in the environment for the make command:
+          export CURRENT_HOST_LDFLAGS="${HOST_LDFLAGS:-} ${YAML_HOST_LIBS}"
 
           make -s O=${OBJ_DIR} ARCH=${ARCH} ${CONFIG} \
-            HOSTLDFLAGS="${HOST_LDFLAGS}" \
+            HOSTLDFLAGS="${CURRENT_HOST_LDFLAGS}" \
             -j$(nproc)
 
       - name: Compile kernel
@@ -102,23 +105,19 @@ jobs:
             export CC_FOR_MAKE="${CC}"
           fi
 
-          # Setup HOST environment for tools like DTC
-          # Ensure Clang is used for HOST tools if desired and available, otherwise system gcc/cc will be used
-          # The working script explicitly sets HOSTCC=clang, HOSTLD=ld.lld etc.
-          # If your cloned clang toolchain is meant for host tools as well, set these:
+          # Ensure HOSTCC, HOSTLD are using the cloned clang if that's what worked.
+          # The script you said "worked" did this.
           export HOSTCC=clang
           export HOSTLD=ld.lld
-          # Add HOSTAR=llvm-ar, HOSTCXX=clang++ if needed by any host C++ tools or archivers
+          # HOSTAR=llvm-ar might also be needed if host tools use ar
 
-          # Get YAML flags specifically for HOST linking
-          export PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}" # Optional, but safe
+          export PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}"
           YAML_HOST_CFLAGS="$(pkg-config --cflags yaml-0.1 2>/dev/null || echo '')"
-          YAML_HOST_LIBS="$(pkg-config --libs yaml-0.1 2>/dev/null || echo "-lyaml")" # Simpler fallback, assumes lib is in default path
+          YAML_HOST_LIBS="$(pkg-config --libs yaml-0.1 2>/dev/null || echo "-lyaml")"
 
           # Append to HOSTCFLAGS and HOST_LDFLAGS for the 'make' command's environment
-          # This ensures host tools (like dtc) get these flags.
-          export HOSTCFLAGS="${HOSTCFLAGS:-} ${YAML_HOST_CFLAGS}"
-          export HOST_LDFLAGS="${HOST_LDFLAGS:-} ${YAML_HOST_LIBS}"
+          export CURRENT_HOST_CFLAGS="${HOSTCFLAGS:-} ${YAML_HOST_CFLAGS}"
+          export CURRENT_HOST_LDFLAGS="${HOST_LDFLAGS:-} ${YAML_HOST_LIBS}"
 
           make O=${OBJ_DIR} ARCH=${ARCH} \
             LLVM=1 \
@@ -142,16 +141,36 @@ jobs:
             LLVM_DIS=${LLVM_DIS} \
             HOSTCC="${HOSTCC}" \
             HOSTLD="${HOSTLD}" \
-            HOSTCFLAGS="${HOSTCFLAGS}" \
-            HOSTLDFLAGS="${HOST_LDFLAGS}" \
+            HOSTCFLAGS="${CURRENT_HOST_CFLAGS}" \
+            HOSTLDFLAGS="${CURRENT_HOST_LDFLAGS}" \
+            V=1 \
             -j$(nproc)
 
-      - name: Report result
+      - name: Report result and Prepare for Upload
+        id: report_and_prepare # Give an id to this step
         run: |
+          set -e
+          KERNEL_IMAGE_PATH=""
           if [ -f "${OBJ_DIR}/arch/${ARCH}/boot/Image" ]; then
-            echo "✅ Kernel built successfully."
-            echo "Kernel image: ${OBJ_DIR}/arch/${ARCH}/boot/Image"
+            echo "✅ Kernel built successfully: Image"
+            KERNEL_IMAGE_PATH="${OBJ_DIR}/arch/${ARCH}/boot/Image"
+            echo "kernel_image_name=Image" >> $GITHUB_OUTPUT
+          elif [ -f "${OBJ_DIR}/arch/${ARCH}/boot/Image.gz" ]; then
+            echo "✅ Kernel built successfully: Image.gz"
+            KERNEL_IMAGE_PATH="${OBJ_DIR}/arch/${ARCH}/boot/Image.gz"
+            echo "kernel_image_name=Image.gz" >> $GITHUB_OUTPUT
           else
-            echo "❌ Build failed: Image not found in ${OBJ_DIR}/arch/${ARCH}/boot/" >&2
+            echo "❌ Build failed: Kernel Image or Image.gz not found in ${OBJ_DIR}/arch/${ARCH}/boot/" >&2
+            ls -lR "${OBJ_DIR}" # List output directory for debugging
             exit 1
           fi
+          echo "Kernel image found at: ${KERNEL_IMAGE_PATH}"
+          echo "kernel_image_path=${KERNEL_IMAGE_PATH}" >> $GITHUB_OUTPUT
+          ls -lh "${OBJ_DIR}/arch/${ARCH}/boot/"
+
+      - name: Upload Kernel Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-image-${{ steps.report_and_prepare.outputs.kernel_image_name }}-${{ github.run_id }}
+          path: ${{ steps.report_and_prepare.outputs.kernel_image_path }}
+          if-no-files-found: error # Fails the workflow if the file isn't found
