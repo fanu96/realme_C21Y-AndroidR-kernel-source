@@ -27,8 +27,8 @@ jobs:
       GCC_ARM_REPO:     https://github.com/rifsxd/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9
 
       # Cross-compilers (Kbuild uses these to find the toolchain binaries if not overridden by CC, LD etc.)
-      CROSS_COMPILE:        aarch64-linux-gnu-
-      CROSS_COMPILE_ARM32:  arm-linux-gnueabi-
+      CROSS_COMPILE:        aarch64-linux-android-
+      CROSS_COMPILE_ARM32:  arm-linux-androideabi-
 
       # LLVM tools (These explicitly tell Kbuild which LLVM tools to use for the TARGET)
       LD:        ld.lld
@@ -42,8 +42,6 @@ jobs:
       LDGOLD:    aarch64-linux-gnu-ld.gold
       LLVM_AR:   llvm-ar
       LLVM_DIS:  llvm-dis
-      BSP_BUILD_ANDROID_OS: 'y'
-      BSP_BUILD_FAMILY: 'qogirl6'
 
     steps:
       - name: Checkout source
@@ -91,7 +89,7 @@ jobs:
 
           make -s O=${OBJ_DIR} ARCH=${ARCH} ${CONFIG} \
             HOSTLDFLAGS="${CURRENT_HOST_LDFLAGS}" \
-            -j$(nproc)
+            -j1
 
       - name: Compile kernel
         run: |
@@ -140,7 +138,7 @@ jobs:
             HOSTLD="${HOSTLD}" \
             HOSTCFLAGS="${CURRENT_HOST_CFLAGS}" \
             HOSTLDFLAGS="${CURRENT_HOST_LDFLAGS}" \
-            -j$(nproc)
+            -j1
 
       - name: Report result and Prepare for Upload
         id: report_and_prepare # Give an id to this step
