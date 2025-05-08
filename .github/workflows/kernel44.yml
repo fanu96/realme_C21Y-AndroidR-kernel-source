@@ -7,8 +7,8 @@ env:
   ARCH: arm64
   KERNEL_SOURCE_DIR: kernel_source
   # Choose a modern, known-good Clang. Proton Clang is a good option.
-  CLANG_REPO: https://github.com/kdrag0n/proton-clang
-  CLANG_BRANCH: master # Or a specific tag like 13.0.0, 14.0.0 etc.
+  CLANG_REPO: https://github.com/fanu96/android_prebuilts_clang_host_linux-x86_clang-6573524
+  CLANG_BRANCH: '10.0' # Or a specific tag like 13.0.0, 14.0.0 etc.
   CLANG_DIR_NAME: proton-clang
   # --- IMPORTANT: Set your defconfig file name ---
   # This should be the name of your defconfig file in arch/arm64/configs/
