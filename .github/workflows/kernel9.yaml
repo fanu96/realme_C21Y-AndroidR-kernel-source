@@ -27,8 +27,8 @@ jobs:
       GCC_ARM_REPO:     https://github.com/rifsxd/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9
 
       # Cross-compilers (Kbuild uses these to find the toolchain binaries if not overridden by CC, LD etc.)
-      CROSS_COMPILE:        aarch64-linux-android-
-      CROSS_COMPILE_ARM32:  arm-linux-androideabi-
+      CROSS_COMPILE:        aarch64-linux-gnu-
+      CROSS_COMPILE_ARM32:  arm-linux-gnueabi-
 
       # LLVM tools (These explicitly tell Kbuild which LLVM tools to use for the TARGET)
       LD:        ld.lld
@@ -39,12 +39,9 @@ jobs:
       READELF:   llvm-readelf
       OBJSIZE:   llvm-size
       STRIP:     llvm-strip
-      LDGOLD:    aarch64-linux-gnu-ld.gold # May or may not be used with LLVM=1, LD=ld.lld
+      LDGOLD:    aarch64-linux-gnu-ld.gold
       LLVM_AR:   llvm-ar
       LLVM_DIS:  llvm-dis
-
-      # Build flags
-      ENABLE_CCACHE:     true
       BSP_BUILD_ANDROID_OS: 'y'
       BSP_BUILD_FAMILY: 'qogirl6'
 
@@ -85,6 +82,11 @@ jobs:
           set -e
           export PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}"
           YAML_HOST_LIBS="$(pkg-config --libs yaml-0.1 2>/dev/null || echo "-lyaml")"
+          # Make sure HOST_LDFLAGS is correctly defined and exported if it needs to persist
+          # or pass it directly if Kbuild picks it up from the make command line for this step.
+          # The original "working" script exported HOST_LDFLAGS.
+          # If just passing is sufficient for your Kbuild for defconfig, this is fine:
+          # For safety, ensuring it's set in the environment for the make command:
           export CURRENT_HOST_LDFLAGS="${HOST_LDFLAGS:-} ${YAML_HOST_LIBS}"
 
           make -s O=${OBJ_DIR} ARCH=${ARCH} ${CONFIG} \
@@ -100,14 +102,17 @@ jobs:
             export CC_FOR_MAKE="${CC}"
           fi
 
+          # Ensure HOSTCC, HOSTLD are using the cloned clang if that's what worked.
+          # The script you said "worked" did this.
           export HOSTCC=clang
           export HOSTLD=ld.lld
-          # export HOSTAR=llvm-ar # Optionally, if host tools need it
+          # HOSTAR=llvm-ar might also be needed if host tools use ar
 
           export PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}"
           YAML_HOST_CFLAGS="$(pkg-config --cflags yaml-0.1 2>/dev/null || echo '')"
           YAML_HOST_LIBS="$(pkg-config --libs yaml-0.1 2>/dev/null || echo "-lyaml")"
 
+          # Append to HOSTCFLAGS and HOST_LDFLAGS for the 'make' command's environment
           export CURRENT_HOST_CFLAGS="${HOSTCFLAGS:-} ${YAML_HOST_CFLAGS}"
           export CURRENT_HOST_LDFLAGS="${HOST_LDFLAGS:-} ${YAML_HOST_LIBS}"
 
@@ -135,119 +140,33 @@ jobs:
             HOSTLD="${HOSTLD}" \
             HOSTCFLAGS="${CURRENT_HOST_CFLAGS}" \
             HOSTLDFLAGS="${CURRENT_HOST_LDFLAGS}" \
-            V=1 \
             -j$(nproc)
 
-      - name: Prepare Artifacts
-        id: prepare_artifacts # Changed ID for clarity
+      - name: Report result and Prepare for Upload
+        id: report_and_prepare # Give an id to this step
         run: |
           set -e
-          # Initialize outputs to empty strings
-          echo "main_kernel_image_path=" >> $GITHUB_OUTPUT
-          echo "main_kernel_image_name=" >> $GITHUB_OUTPUT
-          echo "image_gz_path_output=" >> $GITHUB_OUTPUT
-          echo "dtbo_img_path_output=" >> $GITHUB_OUTPUT
-          echo "dtb_collection_dir_path_output=" >> $GITHUB_OUTPUT
-
-          # --- 1. Main Kernel Image (Image or Image.gz) ---
-          MAIN_KERNEL_IMAGE_PATH=""
-          MAIN_KERNEL_IMAGE_NAME=""
+          KERNEL_IMAGE_PATH=""
           if [ -f "${OBJ_DIR}/arch/${ARCH}/boot/Image" ]; then
-            echo "✅ Main kernel image found: Image"
-            MAIN_KERNEL_IMAGE_PATH="${OBJ_DIR}/arch/${ARCH}/boot/Image"
-            MAIN_KERNEL_IMAGE_NAME="Image"
+            echo "✅ Kernel built successfully: Image"
+            KERNEL_IMAGE_PATH="${OBJ_DIR}/arch/${ARCH}/boot/Image"
+            echo "kernel_image_name=Image" >> $GITHUB_OUTPUT
           elif [ -f "${OBJ_DIR}/arch/${ARCH}/boot/Image.gz" ]; then
-            echo "✅ Main kernel image found: Image.gz"
-            MAIN_KERNEL_IMAGE_PATH="${OBJ_DIR}/arch/${ARCH}/boot/Image.gz"
-            MAIN_KERNEL_IMAGE_NAME="Image.gz"
+            echo "✅ Kernel built successfully: Image.gz"
+            KERNEL_IMAGE_PATH="${OBJ_DIR}/arch/${ARCH}/boot/Image.gz"
+            echo "kernel_image_name=Image.gz" >> $GITHUB_OUTPUT
           else
             echo "❌ Build failed: Kernel Image or Image.gz not found in ${OBJ_DIR}/arch/${ARCH}/boot/" >&2
-            ls -lR "${OBJ_DIR}/arch/${ARCH}/boot/" # List output directory for debugging
+            ls -lR "${OBJ_DIR}" # List output directory for debugging
             exit 1
           fi
-          echo "main_kernel_image_path=${MAIN_KERNEL_IMAGE_PATH}" >> $GITHUB_OUTPUT
-          echo "main_kernel_image_name=${MAIN_KERNEL_IMAGE_NAME}" >> $GITHUB_OUTPUT
-          echo "Main kernel image: ${MAIN_KERNEL_IMAGE_PATH}"
-
-          # --- 2. Image.gz (always try to find and output path if exists) ---
-          IMAGE_GZ_SPECIFIC_PATH="${OBJ_DIR}/arch/${ARCH}/boot/Image.gz"
-          if [ -f "${IMAGE_GZ_SPECIFIC_PATH}" ]; then
-            echo "✅ Image.gz found: ${IMAGE_GZ_SPECIFIC_PATH}"
-            echo "image_gz_path_output=${IMAGE_GZ_SPECIFIC_PATH}" >> $GITHUB_OUTPUT
-          else
-            echo "ℹ️ Image.gz not found at ${IMAGE_GZ_SPECIFIC_PATH} (this is okay if kernel built as uncompressed Image)."
-          fi
-
-          # --- 3. dtbo.img ---
-          DTBO_IMG_PATH="${OBJ_DIR}/arch/${ARCH}/boot/dtbo.img"
-          if [ -f "${DTBO_IMG_PATH}" ]; then
-            echo "✅ dtbo.img found: ${DTBO_IMG_PATH}"
-            echo "dtbo_img_path_output=${DTBO_IMG_PATH}" >> $GITHUB_OUTPUT
-          else
-            echo "ℹ️ dtbo.img not found. Enable CONFIG_OF_OVERLAY and select overlays in defconfig if needed."
-          fi
-
-          # --- 4. .dtb files ---
-          DTB_COLLECTION_DIR="${OBJ_DIR}/dtbs_artifact_collection" # Temporary staging directory for dtbs
-          mkdir -p "${DTB_COLLECTION_DIR}"
-          dtbs_found_in_collection=false
-
-          # Search in arch/$ARCH/boot/dts/ (recursive)
-          DTS_SUBDIR="${OBJ_DIR}/arch/${ARCH}/boot/dts"
-          if [ -d "$DTS_SUBDIR" ]; then
-            find "$DTS_SUBDIR" -name "*.dtb" -type f -exec cp -t "${DTB_COLLECTION_DIR}" {} +
-            if [ -n "$(ls -A "${DTB_COLLECTION_DIR}" 2>/dev/null)" ]; then
-              dtbs_found_in_collection=true
-            fi
-          fi
-
-          # Search in arch/$ARCH/boot/ (non-recursive, top-level only)
-          # This will add to the collection dir if files are found
-          find "${OBJ_DIR}/arch/${ARCH}/boot/" -maxdepth 1 -name "*.dtb" -type f -exec cp -t "${DTB_COLLECTION_DIR}" {} +
-          if [ -n "$(ls -A "${DTB_COLLECTION_DIR}" 2>/dev/null)" ]; then # Re-check after second find
-             dtbs_found_in_collection=true
-          fi
-
-          if [ "$dtbs_found_in_collection" = true ]; then
-            echo "✅ .dtb files collected into ${DTB_COLLECTION_DIR}"
-            echo "dtb_collection_dir_path_output=${DTB_COLLECTION_DIR}" >> $GITHUB_OUTPUT
-          else
-            echo "ℹ️ No .dtb files found in common locations."
-            # rm -rf "${DTB_COLLECTION_DIR}" # Clean up empty staging dir - upload action handles empty path better if output is empty
-          fi
-          echo "--- Artifacts Prepared ---"
+          echo "Kernel image found at: ${KERNEL_IMAGE_PATH}"
+          echo "kernel_image_path=${KERNEL_IMAGE_PATH}" >> $GITHUB_OUTPUT
           ls -lh "${OBJ_DIR}/arch/${ARCH}/boot/"
-          if [ -d "${DTB_COLLECTION_DIR}" ]; then
-            ls -lh "${DTB_COLLECTION_DIR}/"
-          fi
 
-      - name: Upload Main Kernel Image
+      - name: Upload Kernel Image
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-${{ steps.prepare_artifacts.outputs.main_kernel_image_name }}-${{ github.run_id }}
-          path: ${{ steps.prepare_artifacts.outputs.main_kernel_image_path }}
-          if-no-files-found: error
-
-      - name: Upload Image.gz
-        if: steps.prepare_artifacts.outputs.image_gz_path_output != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: kernel-Image.gz-${{ github.run_id }}
-          path: ${{ steps.prepare_artifacts.outputs.image_gz_path_output }}
-          if-no-files-found: warn # Should not happen due to the 'if' condition, but good practice
-
-      - name: Upload dtbo.img
-        if: steps.prepare_artifacts.outputs.dtbo_img_path_output != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: kernel-dtbo.img-${{ github.run_id }}
-          path: ${{ steps.prepare_artifacts.outputs.dtbo_img_path_output }}
-          if-no-files-found: warn
-
-      - name: Upload DTB files
-        if: steps.prepare_artifacts.outputs.dtb_collection_dir_path_output != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: kernel-dtbs-${{ github.run_id }}
-          path: ${{ steps.prepare_artifacts.outputs.dtb_collection_dir_path_output }}/ # Upload directory contents
-          if-no-files-found: warn
+          name: kernel-image-${{ steps.report_and_prepare.outputs.kernel_image_name }}-${{ github.run_id }}
+          path: ${{ steps.report_and_prepare.outputs.kernel_image_path }}
+          if-no-files-found: error # Fails the workflow if the file isn't found
