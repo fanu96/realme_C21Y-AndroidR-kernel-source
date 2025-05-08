@@ -1,152 +1,54 @@
-name: Build Kernel (Minimal)
+name: Build Kernel
 
 on:
-  workflow_dispatch: # Allows manual triggering
+  push:
+    branches:
+      - main
+  workflow_dispatch:
 
 jobs:
-  build_kernel:
-    name: Build Kernel
+  build:
     runs-on: ubuntu-latest
-
     env:
-      # --- Define your base settings here ---
-      KERNEL_SOURCES_DIR: ${{ github.workspace }} # Kernel source code location
-      OBJ_DIR: ${{ github.workspace }}/out      # Build output directory
-      CLANG_INSTALL_DIR: ${{ github.workspace }}/clang-toolchain # Clang installation directory
-      
+      OBJ_DIR: ${{ github.workspace }}/out
+      CLANG_REPO: https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-6573524.git
+      CLANG_BRANCH: "10.0"
+      CONFIG: rmx3261_defconfig
       ARCH: arm64
-      CONFIG_FILE: rmx3261_defconfig       # <<< YOUR KERNEL DEFCONFIG FILE NAME
-      KERNEL_ARTIFACT_PREFIX: "MyKernel" # <<< PREFIX FOR THE UPLOADED ARTIFACT NAME
-
-      CLANG_REPO_URL: https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-6573524.git
-      CLANG_REPO_BRANCH: '10.0'
-      # --- End of base settings ---
 
     steps:
-      - name: Checkout Kernel Sources
+      - name: Checkout source
         uses: actions/checkout@v4
         with:
-          path: ${{ env.KERNEL_SOURCES_DIR }}
+          submodules: recursive
 
-      - name: Install Build Dependencies
+      - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            bc bison build-essential ccache curl flex g++-multilib gcc-multilib \
-            git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev \
-            lib32z1-dev libelf-dev liblz4-tool libncurses5 libncurses5-dev \
-            libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush \
-            rsync schedtool squashfs-tools xsltproc zip zlib1g-dev libncurses-dev \
-            llvm lld
+            bc build-essential libncurses-dev git curl clang
 
-      - name: Setup ccache
-        uses: actions/cache@v4
-        with:
-          path: ~/.ccache
-          key: ${{ runner.os }}-ccache-${{ github.ref_name }}-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-ccache-${{ github.ref_name }}-
-            ${{ runner.os }}-ccache-
-      - run: |
-          ccache -M 5G # Set ccache size
-          ccache -z    # Zero ccache statistics
+      - name: Clone Clang toolchain
+        run: |
+          git clone --depth=1 --branch ${CLANG_BRANCH} ${CLANG_REPO} clang
+          echo "${{ github.workspace }}/clang/bin" >> $GITHUB_PATH
 
-      - name: Setup Clang Toolchain
-        uses: actions/cache@v4
-        id: clang-cache
-        with:
-          path: ${{ env.CLANG_INSTALL_DIR }}
-          key: ${{ runner.os }}-clang-${{ env.CLANG_REPO_URL }}-${{ env.CLANG_REPO_BRANCH }}
-      
-      - name: Clone Clang Toolchain (if not cached)
-        if: steps.clang-cache.outputs.cache-hit != 'true'
+      - name: Generate defconfig
         run: |
-          echo "Clang toolchain not found in cache. Cloning to ${{ env.CLANG_INSTALL_DIR }}..."
-          git clone --depth=1 --single-branch -q ${{ env.CLANG_REPO_URL }} -b ${{ env.CLANG_REPO_BRANCH }} ${{ env.CLANG_INSTALL_DIR }}
-        
-      - name: Add Clang to PATH
-        run: |
-          echo "${{ env.CLANG_INSTALL_DIR }}/bin" >> $GITHUB_PATH
+          make -s O=${OBJ_DIR} ARCH=${ARCH} ${CONFIG} -j$(nproc)
 
-      - name: Generate Defconfig
-        working-directory: ${{ env.KERNEL_SOURCES_DIR }}
+      - name: Compile kernel
         run: |
-          make O=${{ env.OBJ_DIR }} ARCH=${{ env.ARCH }} ${{ env.CONFIG_FILE }}
-
-      - name: Compile Kernel
-        working-directory: ${{ env.KERNEL_SOURCES_DIR }}
-        run: |
-          make -j$(nproc --all) \
-            O=${{ env.OBJ_DIR }} \
-            ARCH=${{ env.ARCH }} \
-            CC="ccache clang" \
-            CLANG_TRIPLE="aarch64-linux-gnu-" \
+          make O=${OBJ_DIR} ARCH=${ARCH} \
+            CC="clang" \
             CROSS_COMPILE="aarch64-linux-gnu-" \
-            CROSS_COMPILE_ARM32="arm-linux-gnueabi-" \
-            LLVM=1 \
-            LLVM_IAS=1
+            -j$(nproc)
 
-      - name: Package Kernel Outputs
+      - name: Report result
         run: |
-          # Define paths to expected kernel output files
-          IMAGE_FILE="${{ env.OBJ_DIR }}/arch/${{ env.ARCH }}/boot/Image"
-          DTBO_FILE="${{ env.OBJ_DIR }}/arch/${{ env.ARCH }}/boot/dtbo.img"
-          IMAGE_GZ_DTB_FILE="${{ env.OBJ_DIR }}/arch/${{ env.ARCH }}/boot/Image.gz-dtb" # Common alternative/addition
-
-          # Check if mandatory files exist
-          if [[ ! -f "$IMAGE_FILE" ]]; then
-            echo "Error: Kernel Image not found at $IMAGE_FILE"
-            exit 1
-          fi
-          if [[ ! -f "$DTBO_FILE" ]]; then
-            echo "Error: dtbo.img not found at $DTBO_FILE"
-            exit 1
-          fi
-
-          # Name of the zip file that will be created on the runner
-          ZIP_TO_CREATE="${{ github.workspace }}/kernel_output.zip"
-          
-          # Temporary directory for collecting files to zip
-          # This helps in creating a clean zip without parent directory structures
-          PACKAGE_DIR="${{ github.workspace }}/_kernel_package_temp"
-          mkdir -p "$PACKAGE_DIR"
-
-          echo "Copying kernel files for packaging..."
-          cp "$IMAGE_FILE" "$PACKAGE_DIR/Image"
-          cp "$DTBO_FILE" "$PACKAGE_DIR/dtbo.img"
-          if [ -f "$IMAGE_GZ_DTB_FILE" ]; then # Package Image.gz-dtb if it exists
-            cp "$IMAGE_GZ_DTB_FILE" "$PACKAGE_DIR/Image.gz-dtb"
-            echo "Included Image.gz-dtb in package."
-          fi
-
-          echo "Creating zip archive: $ZIP_TO_CREATE"
-          cd "$PACKAGE_DIR"
-          zip -r9 "$ZIP_TO_CREATE" .
-          cd "${{ github.workspace }}" # Go back to the main workspace
-          rm -rf "$PACKAGE_DIR"       # Clean up the temporary packaging directory
-          
-          echo "Kernel successfully packaged into $ZIP_TO_CREATE"
-
-      - name: Upload Kernel Artifact
-        if: success() # Only run if previous steps were successful
-        uses: actions/upload-artifact@v4
-        with:
-          # The name of the artifact as it will appear in GitHub Actions UI
-          name: ${{ env.KERNEL_ARTIFACT_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }} # Unique name with run ID
-          path: ${{ github.workspace }}/kernel_output.zip # Path to the file to upload
-
-      - name: Print ccache statistics
-        if: always() # Run this even if other steps fail, for debugging
-        run: ccache -s
-
-      - name: Build Summary
-        if: always()
-        run: |
-          if [[ "${{ job.status }}" == "success" ]]; then
-            echo "✅ Kernel build successful!"
+          if [ -f "${OBJ_DIR}/arch/${ARCH}/boot/Image" ]; then
+            echo "✅ Kernel built successfully."
           else
-            echo "❌ Kernel build failed."
-            # The exit 1 here ensures the job is marked as failed if it wasn't already
-            # For example, if packaging failed but 'Upload Kernel Artifact' was skipped due to 'if: success()'
+            echo "❌ Build failed: Image not found." >&2
             exit 1
           fi
