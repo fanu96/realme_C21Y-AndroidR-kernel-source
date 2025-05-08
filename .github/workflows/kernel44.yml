@@ -1,169 +1,89 @@
-name: Build Kernel for Realme C21Y (RMX3261/RMX3263) - Stock Clang
+name: Build and Package Kernel
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
-
-env:
-  ARCH: arm64
-  KERNEL_SOURCE_DIR: kernel_source
-  # --- Use specific Clang from stock kernel ---
-  CLANG_REPO: https://github.com/fanu96/android_prebuilts_clang_host_linux-x86_clang-6573524
-  CLANG_BRANCH: '10.0' # This corresponds to AOSP Clang 11.0.2 as per the repo's tags/branches
-  CLANG_DIR_NAME: stock-clang # Changed name for clarity
-  # --- IMPORTANT: Set your defconfig file name ---
-  DEFCONFIG_FILE: "rmx3261_defconfig" # <<< ENSURE THIS IS CORRECT
 
 jobs:
   build:
-    runs-on: ubuntu-latest # ubuntu-22.04 or even ubuntu-20.04 could be more stable with older toolchains
+    runs-on: ubuntu-latest
+    env:
+      CONFIG_FILE: rmx3261_defconfig
+      ARCH: arm64
+      KBUILD_BUILD_HOST: clhexftw
+      KBUILD_BUILD_USER: home
+      CLANG_DIR: ${{ runner.home }}/tc/clang-r498229b
+      CCACHE_DIR: ${{ runner.tool_cache }}/ccache
+      ANYKERNEL_DIR: ${{ runner.home }}/anykernel
 
     steps:
-      - name: 📜 Checkout kernel source
-        uses: actions/checkout@v4
+      - name: Cache ccache
+        uses: actions/cache@v3
         with:
-          path: ${{ env.KERNEL_SOURCE_DIR }}
+          path: |
+            ${{ env.CCACHE_DIR }}
+          key: ${{ runner.os }}-ccache-${{ hashFiles('**/*.c', '**/*.h') }}
 
-      - name: 🔧 Install Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            bc bison build-essential ca-certificates cpio \
-            flex git kmod libelf-dev libncurses5-dev libssl-dev \
-            lsb-release make python3 rsync wget zip unzip \
-            libyaml-dev pkg-config ccache
-
-      - name: 📥 Download and Setup Stock Clang Toolchain
-        run: |
-          echo "Cloning Clang from ${{ env.CLANG_REPO }} branch ${{ env.CLANG_BRANCH }} into ${{ env.CLANG_DIR_NAME }}"
-          git clone --depth=1 -b "${{ env.CLANG_BRANCH }}" "${{ env.CLANG_REPO }}" "${{ env.CLANG_DIR_NAME }}"
-          TOOLCHAIN_BIN_DIR="$GITHUB_WORKSPACE/${{ env.CLANG_DIR_NAME }}/bin"
-
-          echo "Adding $TOOLCHAIN_BIN_DIR to GITHUB_PATH"
-          echo "$TOOLCHAIN_BIN_DIR" >> $GITHUB_PATH
-
-          echo "Exporting $TOOLCHAIN_BIN_DIR to current PATH"
-          export PATH="$TOOLCHAIN_BIN_DIR:$PATH"
-
-          echo "--- Clang from Stock Toolchain ---"
-          clang --version
-          echo "--- LLD from Stock Toolchain ---"
-          if command -v ld.lld &> /dev/null; then
-            ld.lld --version
-          else
-            echo "ld.lld not found directly, checking for ld symlink to lld."
-            ls -l $TOOLCHAIN_BIN_DIR/ld
-            $TOOLCHAIN_BIN_DIR/ld --version || echo "Could not get version from $TOOLCHAIN_BIN_DIR/ld"
-          fi
-
-      - name: 🚀 Configure and Build Kernel
-        working-directory: ${{ env.KERNEL_SOURCE_DIR }}
-        run: |
-          export KBUILD_BUILD_USER="GitHubActions"
-          export KBUILD_BUILD_HOST="github.com"
-
-          export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}
-          YAML_LIBS_VALUE=$(pkg-config --libs yaml-0.1 2>/dev/null || echo "-lyaml")
-          CLEANED_HOSTLDFLAGS=$(echo "${YAML_LIBS_VALUE}" | xargs)
-
-          echo "Using defconfig: ${{ env.DEFCONFIG_FILE }}"
-          if [ ! -f "arch/${ARCH}/configs/${{ env.DEFCONFIG_FILE }}" ]; then
-            echo "❌ ERROR: Defconfig file 'arch/${ARCH}/configs/${{ env.DEFCONFIG_FILE }}' not found!"
-            exit 1
-          fi
-
-          # Make defconfig
-          echo "Defconfig command being constructed..."
-          set -x # Echo commands before executing them
-          make O=out \
-               ARCH=${ARCH} \
-               CC="clang" \
-               CLANG_TRIPLE="aarch64-linux-gnu-" \
-               CROSS_COMPILE="aarch64-linux-gnu-" \
-               CROSS_COMPILE_ARM32="arm-linux-gnueabi-" \
-               LLVM=1 \
-               LD="ld.lld" \
-               AR="llvm-ar" \
-               NM="llvm-nm" \
-               OBJCOPY="llvm-objcopy" \
-               OBJDUMP="llvm-objdump" \
-               READELF="llvm-readelf" \
-               OBJSIZE="llvm-size" \
-               STRIP="llvm-strip" \
-               HOSTLDFLAGS="${CLEANED_HOSTLDFLAGS}" \
-               HOSTCC="gcc" \
-               HOSTLD="ld" \
-               ${{ env.DEFCONFIG_FILE }}
-          set +x # Turn off command echoing
-
-          # Build Kernel Image and DTBs
-          echo "Build command being constructed..."
-          set -x
-          make -j$(nproc) O=out \
-               ARCH=${ARCH} \
-               CC="clang" \
-               CLANG_TRIPLE="aarch64-linux-gnu-" \
-               CROSS_COMPILE="aarch64-linux-gnu-" \
-               CROSS_COMPILE_ARM32="arm-linux-gnueabi-" \
-               LLVM=1 \
-               LLVM_IAS=1 \
-               LD="ld.lld" \
-               AR="llvm-ar" \
-               NM="llvm-nm" \
-               OBJCOPY="llvm-objcopy" \
-               OBJDUMP="llvm-objdump" \
-               READELF="llvm-readelf" \
-               OBJSIZE="llvm-size" \
-               STRIP="llvm-strip" \
-               HOSTLDFLAGS="${CLEANED_HOSTLDFLAGS}" \
-               HOSTCC="gcc" \
-               HOSTLD="ld" \
-               Image.gz dtbs
-          set +x
-
-          # ... rest of the script
-          # Verify build artifacts
-          if [ ! -f "out/arch/${ARCH}/boot/Image.gz" ]; then
-            echo "❌ Build failed: Image.gz missing"
-            exit 1
-          fi
-          if [ ! -d "out/arch/${ARCH}/boot/dts" ] || [ -z "$(ls -A out/arch/${ARCH}/boot/dts/**/*.dtb 2>/dev/null)" ]; then
-             echo "⚠️ WARNING: No DTB files found in out/arch/${ARCH}/boot/dts/. This might be an issue if your device needs a separate DTB."
-          else
-            echo "✅ Individual DTB files found."
-          fi
-          echo "✅ Kernel build successful (Image.gz and dtbs targets attempted)."
-
-      - name: 📦 Prepare Artifact
-        run: |
-          ARTIFACT_DIR="$GITHUB_WORKSPACE/artifact"
-          mkdir -p "$ARTIFACT_DIR/dtbs"
-
-          echo "Copying artifacts to $ARTIFACT_DIR"
-          if [ -f "${{ env.KERNEL_SOURCE_DIR }}/out/arch/${{ env.ARCH }}/boot/Image.gz-dtb" ]; then
-            cp "${{ env.KERNEL_SOURCE_DIR }}/out/arch/${{ env.ARCH }}/boot/Image.gz-dtb" "$ARTIFACT_DIR/Image.gz-dtb"
-            echo "Copied Image.gz-dtb"
-          elif [ -f "${{ env.KERNEL_SOURCE_DIR }}/out/arch/${{ env.ARCH }}/boot/Image.gz" ]; then
-            cp "${{ env.KERNEL_SOURCE_DIR }}/out/arch/${{ env.ARCH }}/boot/Image.gz" "$ARTIFACT_DIR/Image.gz"
-            echo "Copied Image.gz"
-          fi
-
-          VENDOR_DTS_PATH="${{ env.KERNEL_SOURCE_DIR }}/out/arch/${{ env.ARCH }}/boot/dts/"
-          if [ -d "$VENDOR_DTS_PATH" ]; then
-            find "$VENDOR_DTS_PATH" -name '*.dtb' -print -exec cp -t "$ARTIFACT_DIR/dtbs/" {} +
-            if [ -z "$(ls -A $ARTIFACT_DIR/dtbs/ 2>/dev/null)" ]; then
-              echo "No .dtb files found to copy from $VENDOR_DTS_PATH"
-            else
-              echo "Copied individual DTBs."
-            fi
-          else
-            echo "Vendor DTS path $VENDOR_DTS_PATH not found, skipping individual DTB copy."
-          fi
-          echo "Artifacts prepared:"
-          ls -R "$ARTIFACT_DIR"
-
-      - name: 📤 Upload Kernel Artifact
-        uses: actions/upload-artifact@v4
+      - name: Checkout source
+        uses: actions/checkout@v3
         with:
-          name: kernel-artifacts-${{ github.run_id }}
-          path: ${{ github.workspace }}/artifact/*
-          if-no-files-found: error
+          fetch-depth: 1
+
+      - name: Ensure clang toolchain
+        run: |
+          if [ ! -d "$CLANG_DIR" ]; then
+            echo "Clang not found: cloning into $CLANG_DIR..."
+            git clone -q --depth=1 \
+              --single-branch \
+              -b '10.0' \
+              https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-6573524.git/ \
+              "$CLANG_DIR"
+          fi
+
+      - name: Set up environment
+        run: |
+          mkdir -p $CCACHE_DIR
+          export PATH="$CLANG_DIR/bin:$PATH"
+          export CCACHE="$CCACHE_DIR"
+          export PATH="$CCACHE_DIR/bin:$PATH"
+
+      - name: Generate defconfig
+        run: |
+          mkdir -p out
+          echo "########### Generating Defconfig ############"
+          make -s ARCH=${{ env.ARCH }} O=out ${CONFIG_FILE} -j$(nproc)
+
+      - name: Compile Kernel
+        run: |
+          echo "######### Compiling kernel #########"
+          make -j$(nproc) \
+            O=out \
+            ARCH=${{ env.ARCH }} \
+            CC="ccache clang" \
+            CLANG_TRIPLE="aarch64-linux-gnu-" \
+            CROSS_COMPILE="aarch64-linux-gnu-" \
+            CROSS_COMPILE_ARM32="arm-linux-gnueabi-" \
+            LLVM=1 \
+            LLVM_IAS=1
+
+      - name: Package build
+        run: |
+          echo "######## Packaging ########"
+          cd out
+          git clone -q https://github.com/clhexftw/AnyKernel3 -b master $ANYKERNEL_DIR
+          mv arch/arm64/boot/Image arch/arm64/boot/dtbo.img $ANYKERNEL_DIR
+          cd $ANYKERNEL_DIR
+          find . -name "*.zip" -delete
+          zip -r AnyKernel.zip *
+          timestamp=$(date +"%d%m%Y-%H%M")
+          artifact_name="RectiliaEX+KSU-vayu-${timestamp}.zip"
+          mv AnyKernel.zip "${artifact_name}"
+          echo "Packaged: $artifact_name"
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: kernel-package
+          path: ${{ env.ANYKERNEL_DIR }}/RectiliaEX+KSU-vayu-*.zip
