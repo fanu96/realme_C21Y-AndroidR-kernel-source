@@ -62,8 +62,8 @@ jobs:
           export KBUILD_BUILD_HOST="github.com"
 
           export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}
-          YAML_LIBS=$(pkg-config --libs yaml-0.1 2>/dev/null || echo "-lyaml")
-          export HOSTLDFLAGS="${YAML_LIBS}" # This is fine as is
+          YAML_LIBS_VALUE=$(pkg-config --libs yaml-0.1 2>/dev/null || echo "-lyaml")
+          CLEANED_HOSTLDFLAGS=$(echo "${YAML_LIBS_VALUE}" | xargs)
 
           echo "Using defconfig: ${{ env.DEFCONFIG_FILE }}"
           if [ ! -f "arch/${ARCH}/configs/${{ env.DEFCONFIG_FILE }}" ]; then
@@ -71,30 +71,56 @@ jobs:
             exit 1
           fi
 
-          # Define common make flags
-          # Note the change for CC
-          COMMON_MAKE_FLAGS="O=out \
-               ARCH=${ARCH} \
-               CC='ccache clang' \
-               CLANG_TRIPLE=aarch64-linux-gnu- \
-               CROSS_COMPILE=aarch64-linux-gnu- \
-               CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-               LLVM=1 \
-               LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump READELF=llvm-readelf OBJSIZE=llvm-size STRIP=llvm-strip \
-               HOSTLDFLAGS='${HOSTLDFLAGS}' \
-               HOSTCC=gcc HOSTLD=ld" # Use system GCC/LD for host tools
-
           # Make defconfig
-          echo "Defconfig command: make ${COMMON_MAKE_FLAGS} ${{ env.DEFCONFIG_FILE }}"
-          make ${COMMON_MAKE_FLAGS} ${{ env.DEFCONFIG_FILE }}
+          echo "Defconfig command being constructed..."
+          set -x # Echo commands before executing them
+          make O=out \
+               ARCH=${ARCH} \
+               CC="clang" \ # <--- Simplified to clang
+               CLANG_TRIPLE="aarch64-linux-gnu-" \
+               CROSS_COMPILE="aarch64-linux-gnu-" \
+               CROSS_COMPILE_ARM32="arm-linux-gnueabi-" \
+               LLVM=1 \
+               LD="ld.lld" \
+               AR="llvm-ar" \
+               NM="llvm-nm" \
+               OBJCOPY="llvm-objcopy" \
+               OBJDUMP="llvm-objdump" \
+               READELF="llvm-readelf" \
+               OBJSIZE="llvm-size" \
+               STRIP="llvm-strip" \
+               HOSTLDFLAGS="${CLEANED_HOSTLDFLAGS}" \
+               HOSTCC="gcc" \
+               HOSTLD="ld" \
+               ${{ env.DEFCONFIG_FILE }}
+          set +x # Turn off command echoing
 
           # Build Kernel Image and DTBs
-          echo "Build command: make -j$(nproc) ${COMMON_MAKE_FLAGS} LLVM_IAS=1 Image.gz dtbs"
-          # Add LLVM_IAS=1 for the main build if your kernel needs it (common for Clang builds)
-          make -j$(nproc) ${COMMON_MAKE_FLAGS} LLVM_IAS=1 Image.gz dtbs
+          echo "Build command being constructed..."
+          set -x
+          make -j$(nproc) O=out \
+               ARCH=${ARCH} \
+               CC="clang" \ # <--- Simplified to clang
+               CLANG_TRIPLE="aarch64-linux-gnu-" \
+               CROSS_COMPILE="aarch64-linux-gnu-" \
+               CROSS_COMPILE_ARM32="arm-linux-gnueabi-" \
+               LLVM=1 \
+               LLVM_IAS=1 \
+               LD="ld.lld" \
+               AR="llvm-ar" \
+               NM="llvm-nm" \
+               OBJCOPY="llvm-objcopy" \
+               OBJDUMP="llvm-objdump" \
+               READELF="llvm-readelf" \
+               OBJSIZE="llvm-size" \
+               STRIP="llvm-strip" \
+               HOSTLDFLAGS="${CLEANED_HOSTLDFLAGS}" \
+               HOSTCC="gcc" \
+               HOSTLD="ld" \
+               Image.gz dtbs
+          set +x
 
           # ... rest of the script
-
           # Verify build artifacts
           if [ ! -f "out/arch/${ARCH}/boot/Image.gz" ]; then
             echo "❌ Build failed: Image.gz missing"
