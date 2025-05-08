@@ -18,19 +18,19 @@ jobs:
       # Clang
       CLANG_REPO:  https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-6573524.git
       CLANG_BRANCH: "10.0"
-      CC: clang
+      CC: clang # For TARGET, passed explicitly to make
       CLANG_TRIPLE: aarch64-linux-gnu-
 
       # GCC prebuilts
-      GCC_BRANCH:        "lineage-19.1"
-      GCC_AARCH64_REPO:  https://github.com/rifsxd/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9
-      GCC_ARM_REPO:      https://github.com/rifsxd/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9
+      GCC_BRANCH:     "lineage-19.1"
+      GCC_AARCH64_REPO: https://github.com/rifsxd/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9
+      GCC_ARM_REPO:     https://github.com/rifsxd/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9
 
       # Cross-compilers
       CROSS_COMPILE:        aarch64-linux-android-
       CROSS_COMPILE_ARM32:  arm-linux-androideabi-
 
-      # LLVM tools
+      # LLVM tools (for TARGET, passed explicitly to make)
       LD:        ld.lld
       AR:        llvm-ar
       NM:        llvm-nm
@@ -44,9 +44,9 @@ jobs:
       LLVM_DIS:  llvm-dis
 
       # Build flags
-      ENABLE_CCACHE:          true
-      BSP_BUILD_ANDROID_OS:   'y'
-      BSP_BUILD_FAMILY:       'qogirl6'
+      ENABLE_CCACHE:     true
+      BSP_BUILD_ANDROID_OS: 'y'
+      BSP_BUILD_FAMILY: 'qogirl6'
 
     steps:
       - name: Checkout source
@@ -59,53 +59,65 @@ jobs:
           set -e
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            bc build-essential libncurses-dev git curl clang ccache \
-            libyaml-dev pkg-config
+            bc build-essential libncurses-dev git curl ccache \
+            libyaml-dev pkg-config # pkg-config is essential
 
       - name: Clone Clang toolchain
         run: |
           set -e
-          git clone --depth=1 --branch ${CLANG_BRANCH} ${CLANG_REPO} clang
-          echo "${{ github.workspace }}/clang/bin" >> $GITHUB_PATH
+          git clone --depth=1 --branch "${{ env.CLANG_BRANCH }}" "${{ env.CLANG_REPO }}" clang-toolchain
+          echo "${{ github.workspace }}/clang-toolchain/bin" >> $GITHUB_PATH
+
+      - name: Verify Clang and LLD versions
+        run: |
+          set -e
+          echo "Clang version:"
+          clang --version
+          echo "LLD version:"
+          ld.lld --version
 
       - name: Clone GCC aarch64 toolchain
         run: |
           set -e
-          git clone --depth=1 --branch ${GCC_BRANCH} ${GCC_AARCH64_REPO} gcc-aarch64
+          git clone --depth=1 --branch "${{ env.GCC_BRANCH }}" "${{ env.GCC_AARCH64_REPO }}" gcc-aarch64
           echo "${{ github.workspace }}/gcc-aarch64/bin" >> $GITHUB_PATH
 
       - name: Clone GCC arm toolchain
         run: |
           set -e
-          git clone --depth=1 --branch ${GCC_BRANCH} ${GCC_ARM_REPO} gcc-arm
+          git clone --depth=1 --branch "${{ env.GCC_BRANCH }}" "${{ env.GCC_ARM_REPO }}" gcc-arm
           echo "${{ github.workspace }}/gcc-arm/bin" >> $GITHUB_PATH
 
       - name: Generate defconfig
         run: |
           set -e
-          make -s O=${OBJ_DIR} ARCH=${ARCH} ${CONFIG} -j$(nproc)
+          # For host tools during defconfig generation, ensure libyaml flags are available.
+          export PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}"
+          
+          make -s O=${OBJ_DIR} ARCH=${ARCH} ${CONFIG} \
+            HOSTCFLAGS="$(pkg-config --cflags yaml-0.1 2>/dev/null || echo '')" \
+            HOST_LDFLAGS="$(pkg-config --libs yaml-0.1 2>/dev/null || echo "-lyaml")" \
+            -j$(nproc)
 
       - name: Compile kernel
         run: |
           set -e
-
-          # wrap clang in ccache if requested
+          # Setup TARGET CC with ccache if enabled
           if [ "${ENABLE_CCACHE}" = "true" ]; then
-            export CC_FOR_MAKE="ccache ${CC}"
+            export CC_FOR_TARGET_MAKE="ccache ${{ env.CC }}" # env.CC is 'clang'
           else
-            export CC_FOR_MAKE="${CC}"
+            export CC_FOR_TARGET_MAKE="${{ env.CC }}"
           fi
 
-          # Get host-only libyaml flags
-          YAML_HOST_CFLAGS="$(pkg-config --cflags yaml-0.1 || echo '')"
-          YAML_HOST_LIBS="$(pkg-config --libs yaml-0.1 || echo '')"
+          # For host tools like dtc, ensure libyaml flags are available.
+          export PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}"
 
           make O=${OBJ_DIR} ARCH=${ARCH} \
             LLVM=1 \
             LLVM_IAS=1 \
             BSP_BUILD_ANDROID_OS=${BSP_BUILD_ANDROID_OS} \
             BSP_BUILD_FAMILY=${BSP_BUILD_FAMILY} \
-            CC="${CC_FOR_MAKE}" \
+            CC="${CC_FOR_TARGET_MAKE}" \
             CLANG_TRIPLE=${CLANG_TRIPLE} \
             CROSS_COMPILE=${CROSS_COMPILE} \
             CROSS_COMPILE_ARM32=${CROSS_COMPILE_ARM32} \
@@ -120,8 +132,9 @@ jobs:
             LDGOLD=${LDGOLD} \
             LLVM_AR=${LLVM_AR} \
             LLVM_DIS=${LLVM_DIS} \
-            HOSTCFLAGS_dtc="${YAML_HOST_CFLAGS}" \
-            HOSTLDLIBS_dtc="${YAML_HOST_LIBS}" \
+            HOSTCFLAGS="$(pkg-config --cflags yaml-0.1 2>/dev/null || echo '')" \
+            HOST_LDFLAGS="$(pkg-config --libs yaml-0.1 2>/dev/null || echo "-lyaml")" \
+            V=1 \
             -j$(nproc)
 
       - name: Report result
@@ -129,7 +142,13 @@ jobs:
           if [ -f "${OBJ_DIR}/arch/${ARCH}/boot/Image" ]; then
             echo "✅ Kernel built successfully."
             echo "Kernel image: ${OBJ_DIR}/arch/${ARCH}/boot/Image"
+            ls -lh "${OBJ_DIR}/arch/${ARCH}/boot/" # List contents for verification
+          elif [ -f "${OBJ_DIR}/arch/${ARCH}/boot/Image.gz" ]; then # Check for Image.gz too
+            echo "✅ Kernel built successfully (Image.gz)."
+            echo "Kernel image: ${OBJ_DIR}/arch/${ARCH}/boot/Image.gz"
+            ls -lh "${OBJ_DIR}/arch/${ARCH}/boot/"
           else
-            echo "❌ Build failed: Image not found in ${OBJ_DIR}/arch/${ARCH}/boot/" >&2
+            echo "❌ Build failed: Kernel Image not found in ${OBJ_DIR}/arch/${ARCH}/boot/" >&2
+            ls -lR "${OBJ_DIR}" # List output directory for debugging
             exit 1
           fi
