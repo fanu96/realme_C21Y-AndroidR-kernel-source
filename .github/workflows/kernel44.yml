@@ -42,9 +42,6 @@ jobs:
       LDGOLD:    aarch64-linux-gnu-ld.gold
       LLVM_AR:   llvm-ar
       LLVM_DIS:  llvm-dis
-
-      # Build flags
-      ENABLE_CCACHE:     true
       BSP_BUILD_ANDROID_OS: 'y'
       BSP_BUILD_FAMILY: 'qogirl6'
 
