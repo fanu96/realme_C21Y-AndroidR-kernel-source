@@ -39,7 +39,7 @@ jobs:
       READELF:   llvm-readelf
       OBJSIZE:   llvm-size
       STRIP:     llvm-strip
-      LDGOLD:    aarch64-linux-gnu-ld.gold
+      LDGOLD:    aarch64-linux-gnu-ld.gold # User intends to use this.
       LLVM_AR:   llvm-ar
       LLVM_DIS:  llvm-dis
 
@@ -56,44 +56,59 @@ jobs:
 
       - name: Install deps + ccache
         run: |
+          set -e
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            bc build-essential libncurses-dev git curl clang ccache \
-            libyaml-dev
+            bc build-essential libncurses-dev git curl ccache \
+            libyaml-dev pkg-config # Added pkg-config
 
       - name: Clone Clang toolchain
         run: |
+          set -e
           git clone --depth=1 --branch ${CLANG_BRANCH} ${CLANG_REPO} clang
           echo "${{ github.workspace }}/clang/bin" >> $GITHUB_PATH
 
       - name: Clone GCC aarch64 toolchain
         run: |
+          set -e
           git clone --depth=1 --branch ${GCC_BRANCH} ${GCC_AARCH64_REPO} gcc-aarch64
           echo "${{ github.workspace }}/gcc-aarch64/bin" >> $GITHUB_PATH
 
       - name: Clone GCC arm toolchain
         run: |
+          set -e
           git clone --depth=1 --branch ${GCC_BRANCH} ${GCC_ARM_REPO} gcc-arm
           echo "${{ github.workspace }}/gcc-arm/bin" >> $GITHUB_PATH
 
       - name: Generate defconfig
         run: |
+          set -e
           make -s O=${OBJ_DIR} ARCH=${ARCH} ${CONFIG} -j$(nproc)
 
       - name: Compile kernel
         run: |
+          set -e
           # wrap clang in ccache if requested
           if [ "${ENABLE_CCACHE}" = "true" ]; then
-            export CC="ccache ${CC}"
+            export CC_FOR_MAKE="ccache ${CC}"
+          else
+            export CC_FOR_MAKE="${CC}"
           fi
 
-          export YAML_CFLAGS="$(pkg-config --cflags yaml-0.1)"
-          export YAML_LIBS="$(pkg-config --libs   yaml-0.1)"
+          # Ensure pkg-config commands don't fail the script if yaml-0.1 isn't found,
+          # though it should be after installing libyaml-dev.
+          # These variables will be empty if pkg-config fails.
+          export YAML_CFLAGS_VALUE="$(pkg-config --cflags yaml-0.1 || echo '')"
+          export YAML_LIBS_VALUE="$(pkg-config --libs   yaml-0.1 || echo '')"
+          export CFLAGS="${CFLAGS} ${YAML_CFLAGS_VALUE}"
+          export LDFLAGS="${LDFLAGS} ${YAML_LIBS_VALUE}"
 
           make O=${OBJ_DIR} ARCH=${ARCH} \
+            LLVM=1 \
+            LLVM_IAS=1 \
             BSP_BUILD_ANDROID_OS=${BSP_BUILD_ANDROID_OS} \
             BSP_BUILD_FAMILY=${BSP_BUILD_FAMILY} \
-            CC="${CC}" \
+            CC="${CC_FOR_MAKE}" \
             CLANG_TRIPLE=${CLANG_TRIPLE} \
             CROSS_COMPILE=${CROSS_COMPILE} \
             CROSS_COMPILE_ARM32=${CROSS_COMPILE_ARM32} \
@@ -108,15 +123,16 @@ jobs:
             LDGOLD=${LDGOLD} \
             LLVM_AR=${LLVM_AR} \
             LLVM_DIS=${LLVM_DIS} \
-            YAML_CFLAGS="${YAML_CFLAGS}" \
-            YAML_LIBS="${YAML_LIBS}" \
+            YAML_CFLAGS="${YAML_CFLAGS_VALUE}" \
+            YAML_LIBS="${YAML_LIBS_VALUE}" \
             -j$(nproc)
 
       - name: Report result
         run: |
           if [ -f "${OBJ_DIR}/arch/${ARCH}/boot/Image" ]; then
             echo "✅ Kernel built successfully."
+            echo "Kernel image: ${OBJ_DIR}/arch/${ARCH}/boot/Image"
           else
-            echo "❌ Build failed: Image not found." >&2
+            echo "❌ Build failed: Image not found in ${OBJ_DIR}/arch/${ARCH}/boot/" >&2
             exit 1
           fi
