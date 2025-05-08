@@ -1,36 +1,32 @@
-name: Build Kernel
+name: Build Kernel (Minimal)
 
 on:
-  push:
-    branches:
-      - main # Or your default branch
   workflow_dispatch: # Allows manual triggering
 
 jobs:
   build_kernel:
-    name: Build Kernel (${{ env.CONFIG_FILE }})
+    name: Build Kernel
     runs-on: ubuntu-latest
 
     env:
-      KERNEL_DIR: ${{ github.workspace }}
-      OBJ_DIR: ${{ github.workspace }}/out
-      # CLANG_DIR_NAME should be a suitable name for the directory where the toolchain is cloned.
-      # Your original script used 'clang-r498229b', while the repo URL points to 'clang-6573524'.
-      # Ensure this name is what you intend for the cloned directory.
-      CLANG_DIR_NAME: clang-r498229b 
+      # --- Define your base settings here ---
+      KERNEL_SOURCES_DIR: ${{ github.workspace }} # Kernel source code location
+      OBJ_DIR: ${{ github.workspace }}/out      # Build output directory
+      CLANG_INSTALL_DIR: ${{ github.workspace }}/clang-toolchain # Clang installation directory
+      
+      ARCH: arm64
+      CONFIG_FILE: rmx3261_defconfig       # <<< YOUR KERNEL DEFCONFIG FILE NAME
+      KERNEL_ARTIFACT_PREFIX: "MyKernel" # <<< PREFIX FOR THE UPLOADED ARTIFACT NAME
+
       CLANG_REPO_URL: https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-6573524.git
       CLANG_REPO_BRANCH: '10.0'
-      CONFIG_FILE: rmx3261_defconfig # Your defconfig file name
-      ARCH: arm64
-      KBUILD_BUILD_HOST: clhexftw
-      KBUILD_BUILD_USER: home
-      KERNEL_NAME_PREFIX: "RectiliaEX+KSU" # Adjusted, device name will be added from defconfig
+      # --- End of base settings ---
 
     steps:
       - name: Checkout Kernel Sources
         uses: actions/checkout@v4
         with:
-          submodules: 'recursive'
+          path: ${{ env.KERNEL_SOURCES_DIR }}
 
       - name: Install Build Dependencies
         run: |
@@ -47,59 +43,39 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.ccache
-          key: ${{ runner.os }}-ccache-${{ github.sha }}
+          key: ${{ runner.os }}-ccache-${{ github.ref_name }}-${{ github.sha }}
           restore-keys: |
+            ${{ runner.os }}-ccache-${{ github.ref_name }}-
             ${{ runner.os }}-ccache-
-
-      - name: Configure ccache
-        run: |
+      - run: |
           ccache -M 5G # Set ccache size
-          ccache -z   # Zero ccache statistics
+          ccache -z    # Zero ccache statistics
 
       - name: Setup Clang Toolchain
         uses: actions/cache@v4
         id: clang-cache
         with:
-          path: ${{ github.workspace }}/${{ env.CLANG_DIR_NAME }}
-          key: ${{ runner.os }}-clang-${{ env.CLANG_DIR_NAME }}-${{ env.CLANG_REPO_BRANCH }} # Cache key based on name and branch
+          path: ${{ env.CLANG_INSTALL_DIR }}
+          key: ${{ runner.os }}-clang-${{ env.CLANG_REPO_URL }}-${{ env.CLANG_REPO_BRANCH }}
       
       - name: Clone Clang Toolchain (if not cached)
         if: steps.clang-cache.outputs.cache-hit != 'true'
         run: |
-          echo "Clang toolchain not found in cache. Cloning to ${{ github.workspace }}/${{ env.CLANG_DIR_NAME }}..."
-          git clone --depth=1 --single-branch -q ${{ env.CLANG_REPO_URL }} -b ${{ env.CLANG_REPO_BRANCH }} ${{ github.workspace }}/${{ env.CLANG_DIR_NAME }}
+          echo "Clang toolchain not found in cache. Cloning to ${{ env.CLANG_INSTALL_DIR }}..."
+          git clone --depth=1 --single-branch -q ${{ env.CLANG_REPO_URL }} -b ${{ env.CLANG_REPO_BRANCH }} ${{ env.CLANG_INSTALL_DIR }}
         
       - name: Add Clang to PATH
         run: |
-          echo "${{ github.workspace }}/${{ env.CLANG_DIR_NAME }}/bin" >> $GITHUB_PATH
-
-      - name: Set Dynamic Variables
-        id: vars
-        run: |
-          # Extract device name from CONFIG_FILE (e.g., rmx3261_defconfig -> rmx3261)
-          DEVICE_NAME_TEMP="${{ env.CONFIG_FILE%_defconfig }}"
-          DEVICE_NAME_TEMP="${DEVICE_NAME_TEMP%_user_defconfig}" # Also handle _user_defconfig
-          DEVICE_NAME_TEMP="${DEVICE_NAME_TEMP##*/}"           # Remove path prefix if any
-          echo "DEVICE_NAME=${DEVICE_NAME_TEMP}" >> $GITHUB_ENV
-
-          # Construct ZIP_NAME using shell variables and then echo to GITHUB_ENV
-          FINAL_ZIP_NAME="${{ env.KERNEL_NAME_PREFIX }}-${DEVICE_NAME_TEMP}-$(date +'%d%m%Y-%H%M').zip"
-          echo "ZIP_NAME=${FINAL_ZIP_NAME}" >> $GITHUB_ENV
-          
-          echo "ZIMAGE_PATH=${{ env.OBJ_DIR }}/arch/${{ env.ARCH }}/boot/Image" >> $GITHUB_ENV
-          echo "DTBO_PATH=${{ env.OBJ_DIR }}/arch/${{ env.ARCH }}/boot/dtbo.img" >> $GITHUB_ENV
-          echo "IMAGE_GZ_DTB_PATH=${{ env.OBJ_DIR }}/arch/${{ env.ARCH }}/boot/Image.gz-dtb" >> $GITHUB_ENV
-          echo "START_TIME=$(date +%s)" >> $GITHUB_ENV
-          echo "Kernel output base path: ${{ env.OBJ_DIR }}/arch/${{ env.ARCH }}/boot/"
+          echo "${{ env.CLANG_INSTALL_DIR }}/bin" >> $GITHUB_PATH
 
       - name: Generate Defconfig
+        working-directory: ${{ env.KERNEL_SOURCES_DIR }}
         run: |
-          echo "########### Generating Defconfig: ${{ env.CONFIG_FILE }} ############"
-          make -s O=${{ env.OBJ_DIR }} ARCH=${{ env.ARCH }} ${{ env.CONFIG_FILE }} -j$(nproc --all)
+          make O=${{ env.OBJ_DIR }} ARCH=${{ env.ARCH }} ${{ env.CONFIG_FILE }}
 
       - name: Compile Kernel
+        working-directory: ${{ env.KERNEL_SOURCES_DIR }}
         run: |
-          echo "######### Compiling kernel #########"
           make -j$(nproc --all) \
             O=${{ env.OBJ_DIR }} \
             ARCH=${{ env.ARCH }} \
@@ -110,72 +86,67 @@ jobs:
             LLVM=1 \
             LLVM_IAS=1
 
-      - name: Check Kernel Outputs & Prepare for Packaging
-        id: check_outputs
-        run: |
-          cd ${{ env.OBJ_DIR }}/arch/${{ env.ARCH }}/boot/
-          
-          if [[ ! -f "Image" ]]; then
-            echo "Error: Kernel Image (Image) not found!"
-            exit 1
-          fi
-          if [[ ! -f "dtbo.img" ]]; then
-            echo "Error: dtbo.img not found!"
-            exit 1
-          fi
-          echo "Kernel Image and dtbo.img found."
-          echo "package_files=true" >> $GITHUB_OUTPUT
-
-          # Prepare a list of files to package
-          # Image and dtbo.img are mandatory (checked above)
-          # Add Image.gz-dtb if it exists
-          FILES_TO_PACKAGE="Image dtbo.img"
-          if [ -f "Image.gz-dtb" ]; then
-            FILES_TO_PACKAGE="$FILES_TO_PACKAGE Image.gz-dtb"
-            echo "Image.gz-dtb found and will be packaged."
-          fi
-          echo "FILES_TO_PACKAGE_LIST=${FILES_TO_PACKAGE}" >> $GITHUB_ENV
-          cd ${{ env.KERNEL_DIR }} # Return to workspace root
-
       - name: Package Kernel Outputs
-        # This step now relies on FILES_TO_PACKAGE_LIST set in the previous step
-        if: steps.check_outputs.outputs.package_files == 'true'
         run: |
-          echo "Creating ZIP archive: ${{ env.ZIP_NAME }}"
-          echo "Files to package: ${{ env.FILES_TO_PACKAGE_LIST }}"
-          cd ${{ env.OBJ_DIR }}/arch/${{ env.ARCH }}/boot/
-          zip -r9 ${{ github.workspace }}/${{ env.ZIP_NAME }} ${{ env.FILES_TO_PACKAGE_LIST }}
-          cd ${{ env.KERNEL_DIR }}
-          echo "FINAL_ZIP_PATH=${{ github.workspace }}/${{ env.ZIP_NAME }}" >> $GITHUB_ENV
-          echo "Created zip: ${{ env.FINAL_ZIP_PATH }}"
+          # Define paths to expected kernel output files
+          IMAGE_FILE="${{ env.OBJ_DIR }}/arch/${{ env.ARCH }}/boot/Image"
+          DTBO_FILE="${{ env.OBJ_DIR }}/arch/${{ env.ARCH }}/boot/dtbo.img"
+          IMAGE_GZ_DTB_FILE="${{ env.OBJ_DIR }}/arch/${{ env.ARCH }}/boot/Image.gz-dtb" # Common alternative/addition
 
-      - name: Upload to free.keep.sh (Optional)
-        if: success() && env.FINAL_ZIP_PATH
-        run: |
-          echo "Uploading ${{ env.ZIP_NAME }} to free.keep.sh..."
-          curl --upload-file ${{ env.FINAL_ZIP_PATH }} https://free.keep.sh || echo "Upload to free.keep.sh failed (optional step)."
-          echo # Newline after curl output
+          # Check if mandatory files exist
+          if [[ ! -f "$IMAGE_FILE" ]]; then
+            echo "Error: Kernel Image not found at $IMAGE_FILE"
+            exit 1
+          fi
+          if [[ ! -f "$DTBO_FILE" ]]; then
+            echo "Error: dtbo.img not found at $DTBO_FILE"
+            exit 1
+          fi
 
-      - name: Upload Kernel Zip as Artifact
-        if: success() && env.FINAL_ZIP_PATH
+          # Name of the zip file that will be created on the runner
+          ZIP_TO_CREATE="${{ github.workspace }}/kernel_output.zip"
+          
+          # Temporary directory for collecting files to zip
+          # This helps in creating a clean zip without parent directory structures
+          PACKAGE_DIR="${{ github.workspace }}/_kernel_package_temp"
+          mkdir -p "$PACKAGE_DIR"
+
+          echo "Copying kernel files for packaging..."
+          cp "$IMAGE_FILE" "$PACKAGE_DIR/Image"
+          cp "$DTBO_FILE" "$PACKAGE_DIR/dtbo.img"
+          if [ -f "$IMAGE_GZ_DTB_FILE" ]; then # Package Image.gz-dtb if it exists
+            cp "$IMAGE_GZ_DTB_FILE" "$PACKAGE_DIR/Image.gz-dtb"
+            echo "Included Image.gz-dtb in package."
+          fi
+
+          echo "Creating zip archive: $ZIP_TO_CREATE"
+          cd "$PACKAGE_DIR"
+          zip -r9 "$ZIP_TO_CREATE" .
+          cd "${{ github.workspace }}" # Go back to the main workspace
+          rm -rf "$PACKAGE_DIR"       # Clean up the temporary packaging directory
+          
+          echo "Kernel successfully packaged into $ZIP_TO_CREATE"
+
+      - name: Upload Kernel Artifact
+        if: success() # Only run if previous steps were successful
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ZIP_NAME }}
-          path: ${{ env.FINAL_ZIP_PATH }}
+          # The name of the artifact as it will appear in GitHub Actions UI
+          name: ${{ env.KERNEL_ARTIFACT_PREFIX }}-${{ github.run_id }}-${{ github.run_attempt }} # Unique name with run ID
+          path: ${{ github.workspace }}/kernel_output.zip # Path to the file to upload
 
       - name: Print ccache statistics
-        if: always()
+        if: always() # Run this even if other steps fail, for debugging
         run: ccache -s
 
-      - name: Finalizing Build
+      - name: Build Summary
         if: always()
         run: |
-          END_TIME=$(date +%s)
-          DIFF=$(($END_TIME - ${{ env.START_TIME }}))
-          echo "Build duration: $(($DIFF / 60)) minute(s) and $(($DIFF % 60)) second(s)."
-          if [[ "${{ job.status }}" == "success" && -n "${{ env.FINAL_ZIP_PATH }}" ]]; then
-            echo "Kernel build successful! Artifact: ${{ env.ZIP_NAME }}"
+          if [[ "${{ job.status }}" == "success" ]]; then
+            echo "✅ Kernel build successful!"
           else
-            echo "Kernel build failed or artifact not created."
-            exit 1 # Ensure job fails if something went wrong
+            echo "❌ Kernel build failed."
+            # The exit 1 here ensures the job is marked as failed if it wasn't already
+            # For example, if packaging failed but 'Upload Kernel Artifact' was skipped due to 'if: success()'
+            exit 1
           fi
