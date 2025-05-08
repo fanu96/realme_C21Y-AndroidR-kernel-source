@@ -8,23 +8,31 @@ on:
 
 jobs:
   build:
+    name: Build Kernel ${{ env.CONFIG }}
     runs-on: ubuntu-latest
 
     env:
+      # Kernel and Paths
+      KERNEL_SOURCES_DIR: ${{ github.workspace }}/kernel
       OBJ_DIR: ${{ github.workspace }}/out
       CONFIG: rmx3261_defconfig
       ARCH: arm64
+      KBUILD_BUILD_HOST: GitHubCI
+      KBUILD_BUILD_USER: CI-Builder
 
       # Clang
+      CLANG_INSTALL_DIR: ${{ github.workspace }}/clang-toolchain
       CLANG_REPO:  https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-6573524.git
       CLANG_BRANCH: "10.0"
-      CC: clang
+      CC_COMPILER: clang
       CLANG_TRIPLE: aarch64-linux-gnu-
 
       # GCC prebuilts
-      GCC_BRANCH:     "lineage-19.1"
+      GCC_AARCH64_INSTALL_DIR: ${{ github.workspace }}/gcc-aarch64-toolchain
+      GCC_ARM_INSTALL_DIR: ${{ github.workspace }}/gcc-arm-toolchain
+      GCC_BRANCH: "lineage-19.1"
       GCC_AARCH64_REPO: https://github.com/rifsxd/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9
-      GCC_ARM_REPO:     https://github.com/rifsxd/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9
+      GCC_ARM_REPO: https://github.com/rifsxd/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9
 
       # Cross-compilers
       CROSS_COMPILE:        aarch64-linux-android-
@@ -39,52 +47,110 @@ jobs:
       READELF:   llvm-readelf
       OBJSIZE:   llvm-size
       STRIP:     llvm-strip
-      LDGOLD:    aarch64-linux-gnu-ld.gold
       LLVM_AR:   llvm-ar
       LLVM_DIS:  llvm-dis
 
+      # Ccache
       ENABLE_CCACHE: true
+
+      # BSP Build Flags
+      BSP_BUILD_ANDROID_OS: "y"
+      BSP_BUILD_FAMILY:     "qogirl6"
+
+      # Artifact Naming
+      ARTIFACT_NAME_PREFIX: "Kernel"
 
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
         with:
+          path: ${{ env.KERNEL_SOURCES_DIR }}
           submodules: recursive
 
-      - name: Install deps + ccache
+      - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            bc build-essential libncurses-dev git curl clang ccache
+            bc build-essential libncurses-dev git curl clang ccache \
+            binutils-aarch64-linux-gnu \
+            libyaml-dev # <--- ADDED LIBYAML-DEV
 
-      - name: Clone Clang toolchain
+      # --- Clang Toolchain ---
+      - name: Setup Clang toolchain
+        uses: actions/cache@v4
+        id: clang-cache
+        with:
+          path: ${{ env.CLANG_INSTALL_DIR }}
+          key: ${{ runner.os }}-clang-${{ env.CLANG_REPO }}-${{ env.CLANG_BRANCH }}
+      - name: Clone Clang toolchain (if not cached)
+        if: steps.clang-cache.outputs.cache-hit != 'true'
+        run: git clone --depth=1 --single-branch -q ${{ env.CLANG_REPO }} -b ${{ env.CLANG_BRANCH }} ${{ env.CLANG_INSTALL_DIR }}
+      - name: Add Clang to PATH
+        run: echo "${{ env.CLANG_INSTALL_DIR }}/bin" >> $GITHUB_PATH
+
+      # --- GCC aarch64 Toolchain (for binutils) ---
+      - name: Setup GCC aarch64 toolchain
+        uses: actions/cache@v4
+        id: gcc-aarch64-cache
+        with:
+          path: ${{ env.GCC_AARCH64_INSTALL_DIR }}
+          key: ${{ runner.os }}-gcc-aarch64-${{ env.GCC_AARCH64_REPO }}-${{ env.GCC_AARCH64_BRANCH }}
+      - name: Clone GCC aarch64 toolchain (if not cached)
+        if: steps.gcc-aarch64-cache.outputs.cache-hit != 'true'
+        run: git clone --depth=1 --single-branch -q ${{ env.GCC_AARCH64_REPO }} -b ${{ env.GCC_BRANCH }} ${{ env.GCC_AARCH64_INSTALL_DIR }}
+      - name: Add GCC aarch64 to PATH
+        run: echo "${{ env.GCC_AARCH64_INSTALL_DIR }}/bin" >> $GITHUB_PATH
+      
+      # --- GCC arm Toolchain (for binutils) ---
+      - name: Setup GCC arm toolchain
+        uses: actions/cache@v4
+        id: gcc-arm-cache
+        with:
+          path: ${{ env.GCC_ARM_INSTALL_DIR }}
+          key: ${{ runner.os }}-gcc-arm-${{ env.GCC_ARM_REPO }}-${{ env.GCC_ARM_BRANCH }}
+      - name: Clone GCC arm toolchain (if not cached)
+        if: steps.gcc-arm-cache.outputs.cache-hit != 'true'
+        run: git clone --depth=1 --single-branch -q ${{ env.GCC_ARM_REPO }} -b ${{ env.GCC_BRANCH }} ${{ env.GCC_ARM_INSTALL_DIR }}
+      - name: Add GCC arm to PATH
+        run: echo "${{ env.GCC_ARM_INSTALL_DIR }}/bin" >> $GITHUB_PATH
+
+      # --- ccache Setup ---
+      - name: Setup ccache
+        if: env.ENABLE_CCACHE == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ${{ runner.os }}-ccache-${{ github.job}}-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-${{ github.job}}-${{ github.ref_name }}-
+      - name: Configure ccache
+        if: env.ENABLE_CCACHE == 'true'
         run: |
-          git clone --depth=1 --branch ${CLANG_BRANCH} ${CLANG_REPO} clang
-          echo "${{ github.workspace }}/clang/bin" >> $GITHUB_PATH
+          ccache -M 10G 
+          ccache -z    
 
-      - name: Clone GCC aarch64 toolchain
-        run: |
-          git clone --depth=1 --branch ${GCC_BRANCH} ${GCC_AARCH64_REPO} gcc-aarch64
-          echo "${{ github.workspace }}/gcc-aarch64/bin" >> $GITHUB_PATH
-
-      - name: Clone GCC arm toolchain
-        run: |
-          git clone --depth=1 --branch ${GCC_BRANCH} ${GCC_ARM_REPO} gcc-arm
-          echo "${{ github.workspace }}/gcc-arm/bin" >> $GITHUB_PATH
-
+      # --- Kernel Build ---
       - name: Generate defconfig
+        working-directory: ${{ env.KERNEL_SOURCES_DIR }}
         run: |
-          make -s O=${OBJ_DIR} ARCH=${ARCH} ${CONFIG} -j$(nproc)
+          make -s O=${{ env.OBJ_DIR }} ARCH=${{ env.ARCH }} ${{ env.CONFIG }} \
+            KBUILD_BUILD_HOST=${{ env.KBUILD_BUILD_HOST }} \
+            KBUILD_BUILD_USER=${{ env.KBUILD_BUILD_USER }}
 
       - name: Compile kernel
+        working-directory: ${{ env.KERNEL_SOURCES_DIR }}
         run: |
-          # wrap clang in ccache if requested
+          FINAL_CC="${CC_COMPILER}"
           if [ "${ENABLE_CCACHE}" = "true" ]; then
-            export CC="ccache ${CC}"
+            FINAL_CC="ccache ${CC_COMPILER}"
           fi
 
-          make O=${OBJ_DIR} ARCH=${ARCH} \
-            CC="${CC}" \
+          make O=${{ env.OBJ_DIR }} ARCH=${{ env.ARCH }} \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            BSP_BUILD_ANDROID_OS=${{ env.BSP_BUILD_ANDROID_OS }} \
+            BSP_BUILD_FAMILY=${{ env.BSP_BUILD_FAMILY }} \
+            CC="${FINAL_CC}" \
             CLANG_TRIPLE=${CLANG_TRIPLE} \
             CROSS_COMPILE=${CROSS_COMPILE} \
             CROSS_COMPILE_ARM32=${CROSS_COMPILE_ARM32} \
@@ -96,16 +162,50 @@ jobs:
             READELF=${READELF} \
             OBJSIZE=${OBJSIZE} \
             STRIP=${STRIP} \
-            LDGOLD=${LDGOLD} \
-            LLVM_AR=${LLVM_AR} \
-            LLVM_DIS=${LLVM_DIS} \
+            KBUILD_BUILD_HOST=${{ env.KBUILD_BUILD_HOST }} \
+            KBUILD_BUILD_USER=${{ env.KBUILD_BUILD_USER }} \
             -j$(nproc)
 
-      - name: Report result
+      # --- Artifact Handling ---
+      - name: Prepare artifacts
+        id: prepare_artifacts
         run: |
-          if [ -f "${OBJ_DIR}/arch/${ARCH}/boot/Image" ]; then
-            echo "✅ Kernel built successfully."
-          else
-            echo "❌ Build failed: Image not found." >&2
+          IMAGE_FILE="${{ env.OBJ_DIR }}/arch/${{ env.ARCH }}/boot/Image"
+          DTBO_FILE="${{ env.OBJ_DIR }}/arch/${{ env.ARCH }}/boot/dtbo.img"
+
+          if [ ! -f "$IMAGE_FILE" ]; then
+            echo "❌ Build failed: Image not found at $IMAGE_FILE" >&2
+            echo "artifact_ready=false" >> $GITHUB_OUTPUT
             exit 1
+          fi
+          
+          ARTIFACT_DIR="${{ github.workspace }}/_artifacts"
+          mkdir -p "$ARTIFACT_DIR"
+          
+          cp "$IMAGE_FILE" "$ARTIFACT_DIR/Image"
+          if [ -f "$DTBO_FILE" ]; then cp "$DTBO_FILE" "$ARTIFACT_DIR/dtbo.img"; fi
+          
+          echo "artifact_path=$ARTIFACT_DIR" >> $GITHUB_OUTPUT
+          echo "artifact_ready=true" >> $GITHUB_OUTPUT
+          echo "✅ Kernel build output prepared."
+
+      - name: Upload Kernel Artifacts
+        if: steps.prepare_artifacts.outputs.artifact_ready == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME_PREFIX }}-${{ env.CONFIG }}-${{ github.run_id }}
+          path: ${{ steps.prepare_artifacts.outputs.artifact_path }}/*
+
+      - name: Print ccache statistics
+        if: env.ENABLE_CCACHE == 'true' && always()
+        run: ccache -s
+
+      - name: Final Summary
+        if: always()
+        run: |
+          if [[ "${{ job.status }}" == "success" && "${{ steps.prepare_artifacts.outputs.artifact_ready }}" == "true" ]]; then
+            echo "🎉 Kernel build and artifact upload successful!"
+          else
+            echo "🔥 Kernel build or artifact preparation failed."
+            if [[ "${{ steps.prepare_artifacts.outputs.artifact_ready }}" != "true" ]]; then exit 1; fi
           fi
