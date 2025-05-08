@@ -9,12 +9,41 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     env:
       OBJ_DIR: ${{ github.workspace }}/out
-      CLANG_REPO: https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-6573524.git
-      CLANG_BRANCH: "10.0"
       CONFIG: rmx3261_defconfig
       ARCH: arm64
+
+      # Clang
+      CLANG_REPO:  https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-6573524.git
+      CLANG_BRANCH: "10.0"
+      CC: clang
+      CLANG_TRIPLE: aarch64-linux-gnu-
+
+      # GCC prebuilts
+      GCC_BRANCH:     "lineage-19.1"
+      GCC_AARCH64_REPO: https://github.com/rifsxd/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9
+      GCC_ARM_REPO:     https://github.com/rifsxd/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9
+
+      # Cross-compilers
+      CROSS_COMPILE:        aarch64-linux-android-
+      CROSS_COMPILE_ARM32:  arm-linux-androideabi-
+
+      # LLVM tools
+      LD:        ld.lld
+      AR:        llvm-ar
+      NM:        llvm-nm
+      OBJCOPY:   llvm-objcopy
+      OBJDUMP:   llvm-objdump
+      READELF:   llvm-readelf
+      OBJSIZE:   llvm-size
+      STRIP:     llvm-strip
+      LDGOLD:    aarch64-linux-gnu-ld.gold
+      LLVM_AR:   llvm-ar
+      LLVM_DIS:  llvm-dis
+
+      ENABLE_CCACHE: true
 
     steps:
       - name: Checkout source
@@ -22,16 +51,26 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install dependencies
+      - name: Install deps + ccache
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            bc build-essential libncurses-dev git curl clang
+            bc build-essential libncurses-dev git curl clang ccache
 
       - name: Clone Clang toolchain
         run: |
           git clone --depth=1 --branch ${CLANG_BRANCH} ${CLANG_REPO} clang
           echo "${{ github.workspace }}/clang/bin" >> $GITHUB_PATH
+
+      - name: Clone GCC aarch64 toolchain
+        run: |
+          git clone --depth=1 --branch ${GCC_BRANCH} ${GCC_AARCH64_REPO} gcc-aarch64
+          echo "${{ github.workspace }}/gcc-aarch64/bin" >> $GITHUB_PATH
+
+      - name: Clone GCC arm toolchain
+        run: |
+          git clone --depth=1 --branch ${GCC_BRANCH} ${GCC_ARM_REPO} gcc-arm
+          echo "${{ github.workspace }}/gcc-arm/bin" >> $GITHUB_PATH
 
       - name: Generate defconfig
         run: |
@@ -39,9 +78,27 @@ jobs:
 
       - name: Compile kernel
         run: |
+          # wrap clang in ccache if requested
+          if [ "${ENABLE_CCACHE}" = "true" ]; then
+            export CC="ccache ${CC}"
+          fi
+
           make O=${OBJ_DIR} ARCH=${ARCH} \
-            CC="clang" \
-            CROSS_COMPILE="aarch64-linux-gnu-" \
+            CC="${CC}" \
+            CLANG_TRIPLE=${CLANG_TRIPLE} \
+            CROSS_COMPILE=${CROSS_COMPILE} \
+            CROSS_COMPILE_ARM32=${CROSS_COMPILE_ARM32} \
+            LD=${LD} \
+            AR=${AR} \
+            NM=${NM} \
+            OBJCOPY=${OBJCOPY} \
+            OBJDUMP=${OBJDUMP} \
+            READELF=${READELF} \
+            OBJSIZE=${OBJSIZE} \
+            STRIP=${STRIP} \
+            LDGOLD=${LDGOLD} \
+            LLVM_AR=${LLVM_AR} \
+            LLVM_DIS=${LLVM_DIS} \
             -j$(nproc)
 
       - name: Report result
