@@ -137,7 +137,7 @@ jobs:
             HOSTLD="${HOSTLD}" \
             HOSTCFLAGS="${CURRENT_HOST_CFLAGS}" \
             HOSTLDFLAGS="${CURRENT_HOST_LDFLAGS}" \
-            -j1
+            -j2
 
       - name: Report result and Prepare for Upload
         id: report_and_prepare # Give an id to this step
