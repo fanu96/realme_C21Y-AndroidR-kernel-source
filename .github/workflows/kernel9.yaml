@@ -12,7 +12,7 @@ jobs:
 
     env:
       OBJ_DIR: ${{ github.workspace }}/out
-      CONFIG: rmx3261_defconfig
+      CONFIG: rmx3263_defconfig
       ARCH: arm64
 
       # Clang
@@ -115,7 +115,6 @@ jobs:
           export CURRENT_HOST_LDFLAGS="${HOST_LDFLAGS:-} ${YAML_HOST_LIBS}"
 
           make O=${OBJ_DIR} ARCH=${ARCH} \
-            LLVM=1 \
             BSP_BUILD_ANDROID_OS=${BSP_BUILD_ANDROID_OS} \
             BSP_BUILD_FAMILY=${BSP_BUILD_FAMILY} \
             CC="${CC_FOR_MAKE}" \
