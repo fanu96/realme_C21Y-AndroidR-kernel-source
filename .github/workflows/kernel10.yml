@@ -129,7 +129,7 @@ jobs:
 
           make O=${OBJ_DIR} ARCH=${ARCH} \
             LLVM=1 \
-            LLVM_IAS=1 \ # Enable LLVM integrated assembler
+            LLVM_IAS=1 \
             BSP_BUILD_ANDROID_OS=${BSP_BUILD_ANDROID_OS} \
             BSP_BUILD_FAMILY=${BSP_BUILD_FAMILY} \
             BSP_BUILD_DT_OVERLAY=${BSP_BUILD_DT_OVERLAY} \
