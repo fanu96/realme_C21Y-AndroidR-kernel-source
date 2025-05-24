@@ -1,0 +1,169 @@
+name: Build Kernel
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      OBJ_DIR: ${{ github.workspace }}/out
+      CONFIG: rmx3263_defconfig
+      ARCH: arm64
+
+      # Clang
+      CLANG_REPO:  https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-6573524.git
+      CLANG_BRANCH: "10.0"
+      CC: clang
+      CLANG_TRIPLE: aarch64-linux-gnu-
+
+      # GCC prebuilts (These are present, but the goal is to ensure they are not used for the kernel itself if using LLVM=1)
+      GCC_BRANCH:     "lineage-19.1"
+      GCC_AARCH64_REPO: https://github.com/rifsxd/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9
+      GCC_ARM_REPO:     https://github.com/rifsxd/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9
+
+      # Cross-compilers (Kbuild uses these to find the toolchain binaries if not overridden by CC, LD etc.)
+      CROSS_COMPILE:        aarch64-linux-gnu-
+      CROSS_COMPILE_ARM32:  arm-linux-gnueabi-
+
+      # LLVM tools (These explicitly tell Kbuild which LLVM tools to use for the TARGET)
+      LD:        ld.lld
+      AR:        llvm-ar
+      NM:        llvm-nm
+      OBJCOPY:   llvm-objcopy
+      OBJDUMP:   llvm-objdump
+      READELF:   llvm-readelf
+      OBJSIZE:   llvm-size
+      STRIP:     llvm-strip
+      LDGOLD:    aarch64-linux-gnu-ld.gold
+      LLVM_AR:   llvm-ar
+      LLVM_DIS:  llvm-dis
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install deps + ccache
+        run: |
+          set -e
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc build-essential libncurses-dev git curl ccache \
+            libyaml-dev pkg-config
+
+      - name: Clone Clang toolchain
+        run: |
+          set -e
+          git clone --depth=1 --branch ${CLANG_BRANCH} ${CLANG_REPO} clang
+          echo "${{ github.workspace }}/clang/bin" >> $GITHUB_PATH
+
+      - name: Clone GCC aarch64 toolchain
+        run: |
+          set -e
+          git clone --depth=1 --branch ${GCC_BRANCH} ${GCC_AARCH64_REPO} gcc-aarch64
+          echo "${{ github.workspace }}/gcc-aarch64/bin" >> $GITHUB_PATH
+
+      - name: Clone GCC arm toolchain
+        run: |
+          set -e
+          git clone --depth=1 --branch ${GCC_BRANCH} ${GCC_ARM_REPO} gcc-arm
+          echo "${{ github.workspace }}/gcc-arm/bin" >> $GITHUB_PATH
+
+      - name: Generate defconfig
+        run: |
+          set -e
+          export PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}"
+          YAML_HOST_LIBS="$(pkg-config --libs yaml-0.1 2>/dev/null || echo "-lyaml")"
+          # Make sure HOST_LDFLAGS is correctly defined and exported if it needs to persist
+          # or pass it directly if Kbuild picks it up from the make command line for this step.
+          # The original "working" script exported HOST_LDFLAGS.
+          # If just passing is sufficient for your Kbuild for defconfig, this is fine:
+          # For safety, ensuring it's set in the environment for the make command:
+          export CURRENT_HOST_LDFLAGS="${HOST_LDFLAGS:-} ${YAML_HOST_LIBS}"
+
+          make -s O=${OBJ_DIR} ARCH=${ARCH} ${CONFIG} \
+            HOSTLDFLAGS="${CURRENT_HOST_LDFLAGS}" \
+            -j1
+
+      - name: Compile kernel
+        run: |
+          set -e
+          if [ "${ENABLE_CCACHE}" = "true" ]; then
+            export CC_FOR_MAKE="ccache ${CC}"
+          else
+            export CC_FOR_MAKE="${CC}"
+          fi
+
+          # Ensure HOSTCC, HOSTLD are using the cloned clang if that's what worked.
+          # The script you said "worked" did this.
+          export HOSTCC=clang
+          export HOSTLD=ld.lld
+          # HOSTAR=llvm-ar might also be needed if host tools use ar
+
+          export PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH}"
+          YAML_HOST_CFLAGS="$(pkg-config --cflags yaml-0.1 2>/dev/null || echo '')"
+          YAML_HOST_LIBS="$(pkg-config --libs yaml-0.1 2>/dev/null || echo "-lyaml")"
+
+          # Append to HOSTCFLAGS and HOST_LDFLAGS for the 'make' command's environment
+          export CURRENT_HOST_CFLAGS="${HOSTCFLAGS:-} ${YAML_HOST_CFLAGS}"
+          export CURRENT_HOST_LDFLAGS="${HOST_LDFLAGS:-} ${YAML_HOST_LIBS}"
+
+          make O=${OBJ_DIR} ARCH=${ARCH} \
+            LLVM=1 \
+            BSP_BUILD_ANDROID_OS=${BSP_BUILD_ANDROID_OS} \
+            BSP_BUILD_FAMILY=${BSP_BUILD_FAMILY} \
+            CC="${CC_FOR_MAKE}" \
+            CLANG_TRIPLE=${CLANG_TRIPLE} \
+            CROSS_COMPILE=${CROSS_COMPILE} \
+            CROSS_COMPILE_ARM32=${CROSS_COMPILE_ARM32} \
+            LD=${LD} \
+            AR=${AR} \
+            NM=${NM} \
+            OBJCOPY=${OBJCOPY} \
+            OBJDUMP=${OBJDUMP} \
+            READELF=${READELF} \
+            OBJSIZE=${OBJSIZE} \
+            STRIP=${STRIP} \
+            LDGOLD=${LDGOLD} \
+            LLVM_AR=${LLVM_AR} \
+            LLVM_DIS=${LLVM_DIS} \
+            HOSTCC="${HOSTCC}" \
+            HOSTLD="${HOSTLD}" \
+            HOSTCFLAGS="${CURRENT_HOST_CFLAGS}" \
+            HOSTLDFLAGS="${CURRENT_HOST_LDFLAGS}" \
+            -j2
+
+      - name: Report result and Prepare for Upload
+        id: report_and_prepare # Give an id to this step
+        run: |
+          set -e
+          KERNEL_IMAGE_PATH=""
+          if [ -f "${OBJ_DIR}/arch/${ARCH}/boot/Image" ]; then
+            echo "✅ Kernel built successfully: Image"
+            KERNEL_IMAGE_PATH="${OBJ_DIR}/arch/${ARCH}/boot/Image"
+            echo "kernel_image_name=Image" >> $GITHUB_OUTPUT
+          elif [ -f "${OBJ_DIR}/arch/${ARCH}/boot/Image.gz" ]; then
+            echo "✅ Kernel built successfully: Image.gz"
+            KERNEL_IMAGE_PATH="${OBJ_DIR}/arch/${ARCH}/boot/Image.gz"
+            echo "kernel_image_name=Image.gz" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Build failed: Kernel Image or Image.gz not found in ${OBJ_DIR}/arch/${ARCH}/boot/" >&2
+            ls -lR "${OBJ_DIR}" # List output directory for debugging
+            exit 1
+          fi
+          echo "Kernel image found at: ${KERNEL_IMAGE_PATH}"
+          echo "kernel_image_path=${KERNEL_IMAGE_PATH}" >> $GITHUB_OUTPUT
+          ls -lh "${OBJ_DIR}/arch/${ARCH}/boot/"
+
+      - name: Upload Kernel Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-image-${{ steps.report_and_prepare.outputs.kernel_image_name }}-${{ github.run_id }}
+          path: ${{ steps.report_and_prepare.outputs.kernel_image_path }}
+          if-no-files-found: error # Fails the workflow if the file isn't found
