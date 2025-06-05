@@ -613,7 +613,7 @@ static ssize_t sel_write_backtrace_filter(struct file *file,
 		goto out;
 
 	length = -EINVAL;
-	if (sscanf(page, "%s", new_value) != 1)
+	if (count >= AVC_BACKTRACE_COMM_LEN || sscanf(page, "%s", new_value) != 1)
 		goto out;
 
 	if (new_value) {
@@ -1683,6 +1683,7 @@ static struct avc_cache_stats *sel_avc_get_stat_idx(loff_t *idx)
 		*idx = cpu + 1;
 		return &per_cpu(avc_cache_stats, cpu);
 	}
+	(*idx)++;
 	return NULL;
 }
 
