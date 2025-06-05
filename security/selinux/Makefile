@@ -5,15 +5,7 @@
 
 ccflags-y := -I$(srctree)/security/selinux -I$(srctree)/security/selinux/include
 
-# Rissu: implement selinux permissive
-ifeq ($(SELINUX_FLAGS), permissive)
 ccflags-y += -DSELINUX_STATE_PERMISSIVE
-else
-ifeq ($(SELINUX_FLAGS),)
-$(warning SELINUX_FLAGS is unexported, building as enforcing)
-endif
-ccflags-y += -DSELINUX_STATE_ENFORCING
-endif
 
 obj-$(CONFIG_SECURITY_SELINUX) := selinux.o
 
