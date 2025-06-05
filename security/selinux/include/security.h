@@ -248,7 +248,6 @@ struct extended_perms {
 
 /* definitions of av_decision.flags */
 #if !defined(SELINUX_STATE_ENFORCING)
-#define AVD_FLAGS_PERMISSIVE	0x0001
 #endif
 
 void security_compute_av(struct selinux_state *state,
