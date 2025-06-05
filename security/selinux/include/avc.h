@@ -6,6 +6,7 @@
  */
 #ifndef _SELINUX_AVC_H_
 #define _SELINUX_AVC_H_
+#define AVD_FLAGS_PERMISSIVE 0x0002
 
 #include <linux/stddef.h>
 #include <linux/errno.h>
