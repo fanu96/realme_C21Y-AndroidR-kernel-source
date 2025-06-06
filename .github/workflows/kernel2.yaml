@@ -1,4 +1,4 @@
-'''name: Kernel Build with DTBs and Modules
+name: Kernel Build with DTBs and Modules
 
 on:
   # Allows you to run this workflow manually from the Actions tab
@@ -304,4 +304,3 @@ jobs:
             ${{ env.ARTIFACTS_DIR }}/modules-*.tar.gz
           retention-days: 7
           if-no-files-found: warn # Don't fail if Image, dtbs or modules.tar.gz aren't generated
-'''
