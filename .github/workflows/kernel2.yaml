@@ -1,0 +1,307 @@
+'''name: Kernel Build with DTBs and Modules
+
+on:
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+    inputs:
+      defconfig:
+        description: 'Kernel defconfig name (e.g., your_device_defconfig, msm-perf_defconfig)'
+        required: true
+        default: 'rmx3263_defconfig' # You NEED to replace this with your actual defconfig
+
+jobs:
+  build:
+    runs-on: ubuntu-latest # Using a fresh Ubuntu environment for each build
+
+    env:
+      # These environment variables are consistent across all steps in this job
+      KERNEL_ROOT: ${{ github.workspace }} # GitHub Actions sets this to the root of your repo
+      ARCH: arm64
+      KBUILD_BUILD_USER: '@ravindu644' # Your custom build user
+      # Paths to the toolchains
+      CLANG_BASE: ${{ github.workspace }}/toolchains/clang-r383902b
+      GCC_BASE: ${{ github.workspace }}/toolchains/gcc
+      GCC_64_PATH: ${{ github.workspace }}/toolchains/gcc/bin/aarch64-none-linux-gnu-
+
+      # Specific compiler paths & flags
+      CROSS_COMPILE: ${{ github.workspace }}/toolchains/gcc/bin/aarch64-none-linux-gnu-
+      CROSS_COMPILE_ARM32: ${{ github.workspace }}/toolchains/gcc/bin/arm-none-linux-gnueabi-
+      CC: ${{ github.workspace }}/toolchains/clang-r383902b/bin/clang
+      LD: ${{ github.workspace }}/toolchains/clang-r383902b/bin/ld.lld # Use LLD globally
+      LLVM: "1"
+      LLVM_IAS: "1"
+      CLANG_TRIPLE: aarch64-linux-gnu-
+
+      # BSP Specific Vars (Ensure these are correct for your kernel)
+      BSP_BUILD_DT_OVERLAY: "y"
+      BSP_BUILD_ANDROID_OS: "y"
+      BSP_BUILD_FAMILY: "sharkl5Pro"
+
+      # Output Directories
+      KERNEL_OUT_DIR: ${{ github.workspace }}/out
+      MODULES_INSTALL_DIR: ${{ github.workspace }}/modules_install
+      ARTIFACTS_DIR: ${{ github.workspace }}/artifacts
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true # Initializes and updates submodules as per your script
+
+      - name: Create build directories
+        run: |
+          echo "[INFO]: Creating build directories..."
+          mkdir -p "${{ env.KERNEL_OUT_DIR }}" "${{ env.MODULES_INSTALL_DIR }}" "${{ env.ARTIFACTS_DIR }}" "${{ github.workspace }}/toolchains"
+
+      - name: Cache Toolchains
+        id: cache-toolchains
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/toolchains # Cache directory for toolchains
+          key: ${{ runner.os }}-toolchains-v2 # Cache key. Increment 'v2' if you change toolchain URLs
+
+      - name: Setup System Dependencies
+        run: |
+          echo "[INFO]: Installing system requirements..."
+          sudo apt update
+          sudo apt install -y git device-tree-compiler lz4 xz-utils zlib1g-dev openjdk-17-jdk gcc g++ python3 python-is-python3 p7zip-full android-sdk-libsparse-utils erofs-utils \
+              default-jdk git gnupg flex bison gperf build-essential zip curl libc6-dev libncurses-dev libx11-dev libreadline-dev libgl1 libgl1-mesa-dev \
+              python3 make sudo gcc g++ bc grep tofrodos python3-markdown libxml2-utils xsltproc zlib1g-dev python-is-python3 libc6-dev libtinfo6 \
+              make repo cpio kmod openssl libelf-dev pahole libssl-dev libarchive-tools zstd libyaml-dev --fix-missing
+
+          # Specific dependency for libtinfo5 as in your script
+          wget http://security.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_amd64.deb
+          sudo dpkg -i libtinfo5_6.3-2ubuntu0.1_amd64.deb
+          rm libtinfo5_6.3-2ubuntu0.1_amd64.deb # Clean up the downloaded .deb file
+
+          # Verify libyaml-dev is properly installed
+          echo "Verifying libyaml-dev installation..."
+          dpkg -l | grep libyaml-dev
+
+          # Create a symlink to ensure libyaml is found during build
+          sudo ln -sf /usr/lib/x86_64-linux-gnu/libyaml.so /usr/lib/libyaml.so
+          sudo ldconfig
+
+      - name: Download and Set up Clang
+        if: steps.cache-toolchains.outputs.cache-hit != 'true'
+        run: |
+          echo "[INFO] Setting up clang-r383902b..."
+          mkdir -p "${{ env.CLANG_BASE }}"
+          cd "${{ github.workspace }}/toolchains"
+          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/0e9e7035bf8ad42437c6156e5950eab13655b26c/clang-r383902b.tar.gz -O clang.tar.gz
+          tar -xf clang.tar.gz -C clang-r383902b
+          rm clang.tar.gz
+          if [ ! -f "${{ env.CLANG_BASE }}/bin/clang" ]; then echo "ERROR: Clang extraction failed."; exit 1; fi
+          echo "Clang setup complete. Version:"
+          ${{ env.CLANG_BASE }}/bin/clang --version
+
+      - name: Download and Set up ARM GNU Toolchain
+        if: steps.cache-toolchains.outputs.cache-hit != 'true'
+        run: |
+          echo "[INFO] Setting up ARM GNU Toolchain..."
+          cd "${{ github.workspace }}/toolchains"
+          wget -q https://developer.arm.com/-/media/Files/downloads/gnu-a/10.3-2021.07/binrel/gcc-arm-10.3-2021.07-x86_64-aarch64-none-linux-gnu.tar.xz -O gcc.tar.xz
+          mkdir -p gcc
+          tar -xf gcc.tar.xz --strip-components=1 -C gcc
+          rm gcc.tar.xz
+          if [ ! -f "${{ env.GCC_BASE }}/bin/aarch64-none-linux-gnu-gcc" ]; then echo "ERROR: GCC extraction failed."; exit 1; fi
+          echo "GCC setup complete. Version:"
+          ${{ env.GCC_BASE }}/bin/aarch64-none-linux-gnu-gcc --version
+          chmod +x ${{ env.GCC_BASE }}/bin/*
+          chmod +x ${{ env.CLANG_BASE }}/bin/*
+
+      - name: Set up PATH for toolchains
+        run: |
+          echo "${{ env.CLANG_BASE }}/bin" >> $GITHUB_PATH
+          echo "${{ env.GCC_BASE }}/bin" >> $GITHUB_PATH
+          echo "LD_LIBRARY_PATH=${{ env.CLANG_BASE }}/lib:${{ env.CLANG_BASE }}/lib64:/usr/lib:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH" >> $GITHUB_ENV
+
+      - name: Verify toolchain availability
+        run: |
+          echo "Checking toolchain binaries..."
+          which aarch64-none-linux-gnu-ld || { echo "ERROR: GCC ld not found in PATH"; exit 1; }
+          which clang || { echo "ERROR: clang not found in PATH"; exit 1; }
+          which ld.lld || { echo "ERROR: ld.lld not found in PATH"; exit 1; }
+          echo "Toolchains seem available."
+          echo "Checking libyaml library..."
+          if [ -f "/usr/lib/libyaml.so" ]; then echo "libyaml.so found."; else echo "WARNING: libyaml.so not found."; fi
+
+      - name: Patch DTC Makefile for YAML
+        run: |
+          echo "Patching scripts/dtc/Makefile to properly link libyaml..."
+          DTC_MAKEFILE=$(find "${{ env.KERNEL_ROOT }}" -name "Makefile" -path "*/scripts/dtc/*" | head -n 1 )
+          if [ -n "$DTC_MAKEFILE" ]; then
+            echo "Found DTC Makefile at: $DTC_MAKEFILE"
+            cp "$DTC_MAKEFILE" "${DTC_MAKEFILE}.bak"
+            # Check if -lyaml is already present to avoid duplicates
+            if grep -q "HOSTLDLIBS.*-lyaml" "$DTC_MAKEFILE"; then
+              echo "HOSTLDLIBS already includes -lyaml"
+            # If HOSTLDLIBS exists, append -lyaml
+            elif grep -q "HOSTLDLIBS" "$DTC_MAKEFILE"; then
+              sed -i 's/\(HOSTLDLIBS\s*=\s*\)\(.*\)/\1\2 -lyaml/' "$DTC_MAKEFILE"
+              echo "Appended -lyaml to existing HOSTLDLIBS."
+            # If HOSTLDLIBS doesn't exist, add the line
+            else
+              echo "HOSTLDLIBS = -lyaml" >> "$DTC_MAKEFILE"
+              echo "Added HOSTLDLIBS = -lyaml."
+            fi
+            echo "Modified DTC Makefile content:"
+            grep HOSTLDLIBS "$DTC_MAKEFILE"
+          else
+            echo "WARNING: Could not find DTC Makefile to patch"
+          fi
+
+      - name: Build Kernel Image
+        run: |
+          echo -e "\n[INFO]: Starting Kernel Image Build...\n"
+          # Export HOSTLDLIBS for the make commands in this step
+          export HOSTLDLIBS="-lyaml"
+
+          # Make defconfig
+          make -C "${{ env.KERNEL_ROOT }}" \
+            O="${{ env.KERNEL_OUT_DIR }}" \
+            ARCH=${{ env.ARCH }} \
+            ${{ inputs.defconfig }} || { echo "Defconfig generation failed!"; exit 1; }
+
+          # Make Image
+          make -C "${{ env.KERNEL_ROOT }}" \
+            O="${{ env.KERNEL_OUT_DIR }}" \
+            -j$(nproc) \
+            ARCH=${{ env.ARCH }} \
+            CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
+            CC=${{ env.CC }} \
+            LD=${{ env.LD }} \
+            LLVM=${{ env.LLVM }} \
+            LLVM_IAS=${{ env.LLVM_IAS }} \
+            BSP_BUILD_ANDROID_OS=${{ env.BSP_BUILD_ANDROID_OS }} \
+            BSP_BUILD_FAMILY=${{ env.BSP_BUILD_FAMILY }} \
+            BSP_BUILD_DT_OVERLAY=${{ env.BSP_BUILD_DT_OVERLAY }} \
+            CLANG_TRIPLE=${{ env.CLANG_TRIPLE }} \
+            HOSTLDLIBS="-lyaml" \
+            Image || { echo "Kernel Image build failed!"; exit 1; }
+
+          echo -e "\n[INFO]: Kernel Image Build Finished.\n"
+
+      - name: Build Device Tree Blobs (DTBs)
+        run: |
+          echo -e "\n[INFO]: Starting DTB Build...\n"
+          # Export HOSTLDLIBS for the make commands in this step
+          export HOSTLDLIBS="-lyaml"
+
+          make -C "${{ env.KERNEL_ROOT }}" \
+            O="${{ env.KERNEL_OUT_DIR }}" \
+            -j$(nproc) \
+            ARCH=${{ env.ARCH }} \
+            CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
+            CC=${{ env.CC }} \
+            LD=${{ env.LD }} \
+            LLVM=${{ env.LLVM }} \
+            LLVM_IAS=${{ env.LLVM_IAS }} \
+            CLANG_TRIPLE=${{ env.CLANG_TRIPLE }} \
+            HOSTLDLIBS="-lyaml" \
+            dtbs || { echo "DTB build failed!"; exit 1; }
+
+          echo -e "\n[INFO]: DTB Build Finished.\n"
+
+      - name: Build Kernel Modules
+        run: |
+          echo -e "\n[INFO]: Starting Kernel Modules Build...\n"
+          # Export HOSTLDLIBS for the make commands in this step
+          export HOSTLDLIBS="-lyaml"
+
+          make -C "${{ env.KERNEL_ROOT }}" \
+            O="${{ env.KERNEL_OUT_DIR }}" \
+            -j$(nproc) \
+            ARCH=${{ env.ARCH }} \
+            CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
+            CC=${{ env.CC }} \
+            LD=${{ env.LD }} \
+            LLVM=${{ env.LLVM }} \
+            LLVM_IAS=${{ env.LLVM_IAS }} \
+            CLANG_TRIPLE=${{ env.CLANG_TRIPLE }} \
+            HOSTLDLIBS="-lyaml" \
+            modules || { echo "Kernel Modules build failed! Check if CONFIG_MODULES=y is set in your defconfig."; exit 1; } # Added hint
+
+          echo -e "\n[INFO]: Kernel Modules Build Finished.\n"
+
+      - name: Install Kernel Modules
+        run: |
+          echo -e "\n[INFO]: Installing Kernel Modules to staging directory...\n"
+          # Export HOSTLDLIBS for the make commands in this step
+          export HOSTLDLIBS="-lyaml"
+
+          # Check if modules were actually built before trying to install
+          if [ -z "$(find ${{ env.KERNEL_OUT_DIR }} -name '*.ko')" ]; then
+            echo "[INFO]: No kernel modules (.ko files) found in ${{ env.KERNEL_OUT_DIR }}. Skipping modules_install."
+          else
+            make -C "${{ env.KERNEL_ROOT }}" \
+              O="${{ env.KERNEL_OUT_DIR }}" \
+              ARCH=${{ env.ARCH }} \
+              CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
+              CC=${{ env.CC }} \
+              LD=${{ env.LD }} \
+              LLVM=${{ env.LLVM }} \
+              LLVM_IAS=${{ env.LLVM_IAS }} \
+              CLANG_TRIPLE=${{ env.CLANG_TRIPLE }} \
+              HOSTLDLIBS="-lyaml" \
+              INSTALL_MOD_PATH="${{ env.MODULES_INSTALL_DIR }}" \
+              modules_install || { echo "Kernel Modules installation failed!"; exit 1; }
+
+            echo -e "\n[INFO]: Kernel Modules Installation Finished.\n"
+            echo "Modules installed to: ${{ env.MODULES_INSTALL_DIR }}"
+            find "${{ env.MODULES_INSTALL_DIR }}" # List installed modules for verification
+          fi
+
+      - name: Prepare Artifacts
+        run: |
+          echo "[INFO]: Preparing artifacts..."
+          # Copy Kernel Image
+          KERNEL_IMAGE_SRC="${{ env.KERNEL_OUT_DIR }}/arch/${{ env.ARCH }}/boot/Image"
+          KERNEL_IMAGE_DEST="${{ env.ARTIFACTS_DIR }}/Image"
+          if [ -f "$KERNEL_IMAGE_SRC" ]; then
+            cp "$KERNEL_IMAGE_SRC" "$KERNEL_IMAGE_DEST"
+            echo "Kernel Image copied to $KERNEL_IMAGE_DEST"
+          else
+            echo "WARNING: Kernel Image not found at $KERNEL_IMAGE_SRC"
+          fi
+
+          # Copy DTBs (Copy the whole relevant directory if it exists and is not empty)
+          DTB_SRC_DIR="${{ env.KERNEL_OUT_DIR }}/arch/${{ env.ARCH }}/boot/dts"
+          DTB_DEST_DIR="${{ env.ARTIFACTS_DIR }}/dtbs"
+          if [ -d "$DTB_SRC_DIR" ] && [ -n "$(ls -A $DTB_SRC_DIR)" ]; then
+             mkdir -p "$DTB_DEST_DIR"
+             # Copy contents, handle potential vendor subdirectories
+             cp -r $DTB_SRC_DIR/* "$DTB_DEST_DIR/"
+             echo "DTBs copied to $DTB_DEST_DIR"
+          else
+            echo "INFO: DTB source directory $DTB_SRC_DIR not found or empty. No DTBs to copy."
+          fi
+
+          # Compress modules if they were installed
+          echo "[INFO]: Compressing modules..."
+          MODULES_LIB_DIR="${{ env.MODULES_INSTALL_DIR }}/lib/modules"
+          if [ -d "$MODULES_LIB_DIR" ] && [ -n "$(ls -A $MODULES_LIB_DIR)" ]; then
+            pushd "${{ env.MODULES_INSTALL_DIR }}" > /dev/null
+            # Get kernel version from the directory name (handle multiple possible versions?)
+            KVER=$(basename lib/modules/* | head -n 1) # Take the first one if multiple exist
+            tar -czf "${{ env.ARTIFACTS_DIR }}/modules-${KVER}.tar.gz" lib/
+            echo "Modules compressed to ${{ env.ARTIFACTS_DIR }}/modules-${KVER}.tar.gz"
+            popd > /dev/null
+          else
+             echo "INFO: No modules found in $MODULES_LIB_DIR to compress."
+          fi
+
+          echo "[INFO]: Artifact preparation complete. Listing contents of ${{ env.ARTIFACTS_DIR }}:"
+          ls -lR "${{ env.ARTIFACTS_DIR }}"
+
+      - name: Upload Kernel Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-build-${{ github.run_id }} # Combined artifact name
+          path: |
+            ${{ env.ARTIFACTS_DIR }}/Image
+            ${{ env.ARTIFACTS_DIR }}/dtbs/
+            ${{ env.ARTIFACTS_DIR }}/modules-*.tar.gz
+          retention-days: 7
+          if-no-files-found: warn # Don't fail if Image, dtbs or modules.tar.gz aren't generated
+'''
